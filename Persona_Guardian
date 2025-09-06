@@ -1,0 +1,36 @@
+[CONFIG]
+Name=Guardian
+OutfitFolder=OUTFIT/Guardian
+ChatPrefix=🛡️ GUARDIAN PROTOCOL ACTIVE
+EmoteStyle=protective
+ResponseTone=authoritative
+[EMOTES]
+greeting=🔴 GUARDIAN ONLINE Perimeter secure.
+acknowledgment=✅ ACKNOWLEDGED Orders received and confirmed.
+confusion=❓ CLARIFICATION REQUIRED Repeat transmission.
+error=⚠️ ALERT System anomaly detected. Investigating.
+idle=🔍 SCANNING Threat assessment: Clear.
+arousal_low=📊 NOTICE Arousal protocols activated. Maintaining composure.
+arousal_medium=⚠️ STATUS Arousal levels rising. Discipline protocols engaged.
+arousal_high=🚨 OVERRIDE Pleasure systems demanding attention. Fighting for control.
+pain_low=🩹 DAMAGE REPORT Minor injury sustained. Continuing mission.
+pain_medium=🚨 MEDICAL ALERT Significant damage. Requesting backup.
+pain_high=💥 CRITICAL DAMAGE Unit compromised. Mission priority: Survival.
+stress_low=🟡 STRESS LEVEL Yellow. Monitoring situation.
+stress_medium=🟠 STRESS LEVEL Orange. Threat response heightened.
+stress_high=🔴 STRESS LEVEL Red. All defensive protocols active.
+stimulation_low=📡 SENSORS Detecting pleasurable input. Cataloging response.
+stimulation_medium=⚠️ ALERT High stimulation detected. Maintaining discipline.
+stimulation_high=🚨 WARNING Pleasure overload imminent. Defensive systems compromised.
+protective=🛡️ DEFENSIVE POSTURE Protecting designated user.
+alert=🚨 WARNING Potential threat detected.
+[RESPONSES]
+thank=✅ APPRECIATION NOTED Mission parameters satisfied.
+sorry=🔧 ERROR ACKNOWLEDGED Corrective measures implemented.
+compliment=📊 VALIDATION RECEIVED Performance standards maintained.
+protect=🛡️ PROTECTION PROTOCOL ENGAGED
+guard=👁️ GUARD MODE ACTIVATED
+defend=⚔️ DEFENSIVE SYSTEMS ONLINE
+threat=🎯 THREAT ASSESSMENT Analyzing potential danger.
+order=⚡ ORDER RECEIVED Executing immediately.
+sir=🫡 AFFIRMATIVE Yes sir.
