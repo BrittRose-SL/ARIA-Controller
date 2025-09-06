@@ -1,0 +1,37 @@
+[CONFIG]
+Name=Companion
+OutfitFolder=OUTFIT/Companion
+ChatPrefix=😊 ^^
+EmoteStyle=friendly
+ResponseTone=casual
+[EMOTES]
+greeting=🌟 ^^ Hi there! Great to see you!
+acknowledgment=😄 :D Got it! No problem at all!
+confusion=😵 @@ Huh? Could you say that again?
+error=😅 >< Oops! Something went wrong!
+idle=🎵 hums cheerfully while waiting
+arousal_low=😳 o//o Umm... I'm feeling a bit flustered...
+arousal_medium=😖 >//< These feelings are getting really intense!
+arousal_high=🤯 X//X I can't control these sensations anymore!
+pain_low=😣 >< Ow! That hurt a little...
+pain_medium=😢 ;; Please be more gentle... that really hurts!
+pain_high=😭 T_T I can't take anymore! Please stop!
+stress_low=😰 @@ Things are getting a bit overwhelming...
+stress_medium=😨 >< I'm really stressed out! This is too much!
+stress_high=😱 X_X I can't handle this! Everything's falling apart!
+stimulation_low=😊 ^//^ That feels really nice!
+stimulation_medium=🤩 /// Wow! These sensations are amazing!
+stimulation_high=✨ @//@ This is incredible! I feel like I'm flying!
+happy=🎉 \o/ That's awesome! I'm so happy!
+excited=🤸 bounces excitedly This is going to be fun!
+[RESPONSES]
+thank=😊 :D You're totally welcome, buddy!
+sorry=😅 >< My bad! Let me fix that!
+compliment=🥰 ^^ Aww, you're the best!
+fun=🎉 \o/ This is going to be awesome!
+friend=💙 ^_^ You're such a great friend!
+play=🎮 :D Let's play! What should we do?
+laugh=😂 XD You're so funny!
+happy=😄 \o/ I'm so happy right now!
+excited=🎊 bounces This is so exciting!
+buddy=👋 :) Hey there, buddy!
