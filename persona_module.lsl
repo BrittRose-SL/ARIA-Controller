@@ -654,16 +654,17 @@ default {
         
         // Random idle behavior based on current levels
         if (llFrand(100.0) < 5.0) {  // 5% chance every timer cycle
+            string emote = "";
             if (gArousalLevel >= 50.0) {
-                string emote = getPersonaEmoteByLevel("arousal", gArousalLevel);
+                emote = getPersonaEmoteByLevel("arousal", gArousalLevel);
                 if (emote != "") llOwnerSay(emote);
             }
             else if (gStressLevel >= 50.0) {
-                string emote = getPersonaEmoteByLevel("stress", gStressLevel);
+                emote = getPersonaEmoteByLevel("stress", gStressLevel);
                 if (emote != "") llOwnerSay(emote);
             }
             else if (gPainLevel >= 25.0) {
-                string emote = getPersonaEmoteByLevel("pain", gPainLevel);
+                emote = getPersonaEmoteByLevel("pain", gPainLevel);
                 if (emote != "") llOwnerSay(emote);
             }
             else {
