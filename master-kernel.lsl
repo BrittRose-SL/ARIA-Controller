@@ -1,6 +1,6 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 10.3 - WEARER ADMIN MODE + DATA PERSISTENCE + ACCURATE DATES
-//-- Added support for configurable wearer admin privileges, persistent install data, and accurate date conversion
+//-- Version 10.4 - ENHANCED HOVER TEXT + PERSONA INTEGRATION
+//-- Added centralized hover text management with persona data integration and emoji support
 
 // --- USER LISTS & CHANNELS ---
 list gAdministrators;
@@ -16,6 +16,7 @@ integer UPDATE_UNIT_INFO = 103;
 integer UPDATE_PERSONA_STATUS = 104;
 integer UPDATE_USER_LISTS = 105;
 integer UPDATE_WEARER_ADMIN_MODE = 106;
+integer UPDATE_HOVER_DATA = 107;      // New: Receive hover data from modules
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
@@ -47,6 +48,14 @@ integer gIsCharging = FALSE;
 list gRegisteredModules;
 list gActiveModules;
 
+// --- HOVER TEXT MANAGEMENT ---
+string gPersonaName = "Default";
+string gPersonaTone = "standard";
+integer gArousalLevel = 0;
+integer gStimulationLevel = 0;
+integer gPainLevel = 0;
+integer gStressLevel = 0;
+
 // --- MENU DIALOGS & VARIABLES ---
 string gMainMenuDialog;
 integer gDialogHandle;
@@ -65,6 +74,37 @@ integer ACCESS_WEARER = 2;
 integer ACCESS_PUBLIC = 1;
 
 // --- HELPER FUNCTIONS ---
+updateHoverText() {
+    string status = "🤖 A.R.I.A. Unit: " + gUnitName + "\n";
+    status += "🎭 Persona: " + gPersonaName + " | Mode: " + gPersonaTone + "\n";
+    
+    // Battery status with emoji
+    string batteryEmoji = "🔋";
+    if (gBatteryLevel <= 25.0) batteryEmoji = "🪫";
+    if (gBatteryLevel <= 10.0) batteryEmoji = "🔴";
+    
+    status += batteryEmoji + " Power: " + (string)((integer)gBatteryLevel) + "%\n";
+    
+    // Indicator levels with emojis
+    status += "💕 A:" + (string)gArousalLevel + "% 🌟 S:" + (string)gStimulationLevel + "% 😣 P:" + (string)gPainLevel + "% 😰 St:" + (string)gStressLevel + "%";
+    
+    // Color based on status
+    vector color = <0.2, 1.0, 0.8>;  // Default cyan
+    if (gBatteryLevel <= 25.0) color = <1.0, 0.5, 0.0>;  // Orange for low battery
+    if (gBatteryLevel <= 10.0) color = <1.0, 0.0, 0.0>;  // Red for critical battery
+    
+    // Override color based on critical levels
+    if (gStressLevel >= 75 || gPainLevel >= 75) color = <1.0, 0.0, 0.0>;  // Red for critical stress/pain
+    else if (gArousalLevel >= 75) color = <1.0, 0.5, 1.0>;  // Pink for high arousal
+    
+    // Only show hover text when powered on
+    if (gPowerState) {
+        llSetText(status, color, 1.0);
+    } else {
+        llSetText("🤖 A.R.I.A. Unit: " + gUnitName + "\n❌ OFFLINE", <0.5, 0.5, 0.5>, 1.0);
+    }
+}
+
 string convertTimestampToDate(integer timestamp) {
     if (timestamp < 1) return "";
     
@@ -212,6 +252,7 @@ handleMenuCommand(key user, string command) {
         gPowerState = TRUE;
         llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "ON", NULL_KEY);
         llSetTimerEvent(60.0);
+        updateHoverText();
         llInstantMessage(user, "A.R.I.A. systems online.");
     } 
     else if (command == "POWER OFF" && access >= ACCESS_ADMIN) {
@@ -222,6 +263,7 @@ handleMenuCommand(key user, string command) {
         gPowerState = FALSE;
         llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY);
         llSetTimerEvent(0.0);
+        updateHoverText();
         llInstantMessage(user, "A.R.I.A. systems shutting down.");
     } 
     else if (command == "SOS" && access >= ACCESS_WEARER) { 
@@ -299,8 +341,9 @@ default {
         
         string modeStatus = "ENABLED";
         if (!gWearerAdminMode) modeStatus = "DISABLED";
-        llOwnerSay("A.R.I.A. Main Module v10.3 initialized. Wearer Admin Mode: " + modeStatus);
+        llOwnerSay("A.R.I.A. Main Module v10.4 initialized. Wearer Admin Mode: " + modeStatus);
         broadcastConfig();
+        updateHoverText();
     }
 
     dataserver(key requested, string data) {
@@ -437,6 +480,20 @@ default {
             }
         } else if (n == UPDATE_PERSONA_STATUS) {
             gCurrentPersona = m;
+            gPersonaName = m;  // Update hover text persona name
+            updateHoverText();
+        }
+        else if (n == UPDATE_HOVER_DATA) {
+            list parts = llParseString2List(m, ["|"], []);
+            if (llList2String(parts, 0) == "PERSONA") {
+                gPersonaName = llList2String(parts, 1);
+                gPersonaTone = llList2String(parts, 2);
+                gArousalLevel = (integer)llList2String(parts, 3);
+                gStimulationLevel = (integer)llList2String(parts, 4);
+                gPainLevel = (integer)llList2String(parts, 5);
+                gStressLevel = (integer)llList2String(parts, 6);
+                updateHoverText();
+            }
         }
         else if (n == UPDATE_USER_LISTS) {
             list parts = llParseString2List(m, ["|"], []);
@@ -548,12 +605,14 @@ default {
             gPowerState = FALSE; 
             llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY); 
             llSay(0, "CRITICAL POWER FAILURE. SYSTEM OFFLINE."); 
+            updateHoverText();
         }
         if (gBatteryLevel > 0.0 && !gPowerState) { 
             gPowerState = TRUE; 
             llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "ON", NULL_KEY); 
             llSay(0, "Minimum power level reached. Systems rebooting."); 
             broadcastConfig(); 
+            updateHoverText();
         }
         
         string status_string = "STATUS_BROADCAST|" + gUnitName + "|" + (string)gBatteryLevel + "|" + gCurrentPersona + "|";
@@ -571,6 +630,7 @@ default {
         }
         
         llMessageLinked(LINK_SET, UPDATE_BATTERY, (string)gBatteryLevel, NULL_KEY);
+        updateHoverText();
     }
     
     changed(integer c) {
