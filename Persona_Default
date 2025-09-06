@@ -1,0 +1,30 @@
+[CONFIG]
+Name=Default
+OutfitFolder=OUTFIT/Default
+ChatPrefix=🤖 [A.R.I.A.]
+EmoteStyle=neutral
+ResponseTone=standard
+[EMOTES]
+greeting=🤖 systems online Hello.
+acknowledgment=✅ nods Understood.
+confusion=🔄 processing Please clarify.
+error=❌ error tone System malfunction detected.
+idle=💫 status lights blink steadily
+arousal_low=📊 sensors detecting elevated biometric readings
+arousal_medium=⚠️ warning: arousal levels elevated
+arousal_high=🚨 warning: arousal sensors at maximum threshold
+pain_low=🔍 damage sensors active
+pain_medium=⚠️ moderate damage detected
+pain_high=🚨 critical damage detected - repair required
+stress_low=📈 processing load increased
+stress_medium=⚠️ system stress elevated
+stress_high=🚨 system overload warning
+stimulation_low=📡 pleasure receptors active
+stimulation_medium=📊 stimulation levels elevated
+stimulation_high=🌟 maximum stimulation threshold reached
+[RESPONSES]
+thank=✨ You are welcome.
+sorry=ℹ️ No apology necessary.
+compliment=📝 acknowledges Thank you for the feedback.
+help=💡 displays help interface How may I assist?
+malfunction=🔧 runs diagnostic All systems nominal.
