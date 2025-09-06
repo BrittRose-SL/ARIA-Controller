@@ -681,7 +681,7 @@ default {
         }
         if (c & CHANGED_INVENTORY) {
             // Inventory changed - rescan for persona notecards
-            llOwnerSay("Inventory changed - rescanning for persona notecards...");
+            llOwnerSay(EMOJI_GEAR + " Inventory changed - rescanning for persona notecards...");
             scanForPersonaNotecards();
         }
     }
