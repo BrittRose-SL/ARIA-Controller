@@ -1,6 +1,8 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 10.4 - ENHANCED HOVER TEXT + PERSONA INTEGRATION
+//-- Version 10.6 - FIXED SYNTAX ERROR & MENU OVERFLOW & ADDED DIRECT ACCESS
 //-- Added centralized hover text management with persona data integration and emoji support
+//-- CHANGELOG v10.6: Fixed syntax error - moved function definitions outside state block
+//-- CHANGELOG v10.5: Fixed button overflow, moved Permissions and Diagnostics to main menu, added paging support
 
 // --- USER LISTS & CHANNELS ---
 list gAdministrators;
@@ -16,7 +18,7 @@ integer UPDATE_UNIT_INFO = 103;
 integer UPDATE_PERSONA_STATUS = 104;
 integer UPDATE_USER_LISTS = 105;
 integer UPDATE_WEARER_ADMIN_MODE = 106;
-integer UPDATE_HOVER_DATA = 107;      // New: Receive hover data from modules
+integer UPDATE_HOVER_DATA = 107;      
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
@@ -47,6 +49,8 @@ integer gIsCharging = FALSE;
 // --- MODULE MANAGEMENT ---
 list gRegisteredModules;
 list gActiveModules;
+integer gCurrentModulePage = 0; // For paging through modules
+integer gModulesPerPage = 7; // Max modules per page (leaving room for nav buttons)
 
 // --- HOVER TEXT MANAGEMENT ---
 string gPersonaName = "Default";
@@ -75,130 +79,72 @@ integer ACCESS_PUBLIC = 1;
 
 // --- HELPER FUNCTIONS ---
 updateHoverText() {
-    string status = "🤖 A.R.I.A. Unit: " + gUnitName + "\n";
-    status += "🎭 Persona: " + gPersonaName + " | Mode: " + gPersonaTone + "\n";
+    string status = "🤖 A.R.I.A. " + gPersonaName;
     
-    // Battery status with emoji
-    string batteryEmoji = "🔋";
-    if (gBatteryLevel <= 25.0) batteryEmoji = "🪫";
-    if (gBatteryLevel <= 10.0) batteryEmoji = "🔴";
-    
-    status += batteryEmoji + " Power: " + (string)((integer)gBatteryLevel) + "%\n";
-    
-    // Indicator levels with emojis
-    status += "💕 A:" + (string)gArousalLevel + "% 🌟 S:" + (string)gStimulationLevel + "% 😣 P:" + (string)gPainLevel + "% 😰 St:" + (string)gStressLevel + "%";
-    
-    // Color based on status
-    vector color = <0.2, 1.0, 0.8>;  // Default cyan
-    if (gBatteryLevel <= 25.0) color = <1.0, 0.5, 0.0>;  // Orange for low battery
-    if (gBatteryLevel <= 10.0) color = <1.0, 0.0, 0.0>;  // Red for critical battery
-    
-    // Override color based on critical levels
-    if (gStressLevel >= 75 || gPainLevel >= 75) color = <1.0, 0.0, 0.0>;  // Red for critical stress/pain
-    else if (gArousalLevel >= 75) color = <1.0, 0.5, 1.0>;  // Pink for high arousal
-    
-    // Only show hover text when powered on
-    if (gPowerState) {
-        llSetText(status, color, 1.0);
+    // Battery indicator with emoji
+    if (gBatteryLevel >= 75.0) {
+        status += " 🔋";
+    } else if (gBatteryLevel >= 50.0) {
+        status += " 🔄";
+    } else if (gBatteryLevel >= 25.0) {
+        status += " ⚡";
     } else {
-        llSetText("🤖 A.R.I.A. Unit: " + gUnitName + "\n❌ OFFLINE", <0.5, 0.5, 0.5>, 1.0);
-    }
-}
-
-string convertTimestampToDate(integer timestamp) {
-    if (timestamp < 1) return "";
-    
-    integer daysSinceEpoch = timestamp / 86400;
-    integer year = 1970;
-    integer remainingDays = daysSinceEpoch;
-    
-    while (remainingDays >= 365) {
-        integer daysInYear = 365;
-        if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-            daysInYear = 366;
-        }
-        
-        if (remainingDays >= daysInYear) {
-            remainingDays -= daysInYear;
-            year++;
-        } else {
-            jump done;
-        }
-    }
-    @done;
-    
-    list monthDays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    
-    if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-        monthDays = llListReplaceList(monthDays, [29], 1, 1);
+        status += " 🪫";
     }
     
-    integer month = 1;
-    while (remainingDays >= llList2Integer(monthDays, month - 1) && month <= 12) {
-        remainingDays -= llList2Integer(monthDays, month - 1);
-        month++;
+    // Power state indicator
+    if (!gPowerState) {
+        status += " 💤";
+    } else if (gIsCharging) {
+        status += " ⚡";
     }
     
-    integer day = remainingDays + 1;
+    // Security status
+    if (gIsSecure) {
+        status += " 🔒";
+    }
     
-    string yearStr = (string)year;
-    string monthStr = (string)month;
-    string dayStr = (string)day;
+    status += "\nBattery: " + (string)((integer)gBatteryLevel) + "%";
     
-    if (month < 10) monthStr = "0" + monthStr;
-    if (day < 10) dayStr = "0" + dayStr;
+    // Persona tone indicator
+    if (gPersonaTone != "standard") {
+        status += " | Tone: " + gPersonaTone;
+    }
     
-    return yearStr + "-" + monthStr + "-" + dayStr;
+    // Add indicators for arousal/stimulation levels if applicable
+    if (gArousalLevel > 0 || gStimulationLevel > 0) {
+        status += " | A:" + (string)gArousalLevel + " S:" + (string)gStimulationLevel;
+    }
+    
+    vector textColor = <0.8, 0.9, 1.0>; // Light blue default
+    
+    if (!gPowerState) {
+        textColor = <0.5, 0.5, 0.5>; // Gray when offline
+    } else if (gBatteryLevel <= 15.0) {
+        textColor = <1.0, 0.3, 0.3>; // Red when low battery
+    } else if (gIsCharging) {
+        textColor = <0.3, 1.0, 0.3>; // Green when charging
+    }
+    
+    llSetText(status, textColor, 1.0);
+    
+    // Send hover data to modules
+    string hoverData = gPersonaName + "|" + gPersonaTone + "|" + (string)gArousalLevel + "|" + (string)gStimulationLevel + "|" + (string)gPainLevel + "|" + (string)gStressLevel;
+    llMessageLinked(LINK_SET, UPDATE_HOVER_DATA, hoverData, NULL_KEY);
 }
 
 saveInstallData() {
-    if (gInstallTimestamp > 0) {
-        string currentDesc = llGetObjectDesc();
-        string installData = "INSTALL:" + gInstallDate + ":" + (string)gInstallTimestamp;
-        
-        if (llSubStringIndex(currentDesc, "INSTALL:") != -1) {
-            list descParts = llParseString2List(currentDesc, ["|"], []);
-            integer i;
-            list newDescParts = [];
-            for (i = 0; i < llGetListLength(descParts); i++) {
-                string part = llList2String(descParts, i);
-                if (llSubStringIndex(part, "INSTALL:") == -1) {
-                    newDescParts += [part];
-                }
-            }
-            newDescParts += [installData];
-            string newDesc = llDumpList2String(newDescParts, "|");
-            llSetObjectDesc(newDesc);
-        } else {
-            if (currentDesc == "") {
-                llSetObjectDesc(installData);
-            } else {
-                llSetObjectDesc(currentDesc + "|" + installData);
-            }
-        }
-    }
+    // Save install timestamp for persistence
+    llOwnerSay("@setenv_install_timestamp:" + (string)gInstallTimestamp + "=force");
 }
 
-loadInstallData() {
-    string desc = llGetObjectDesc();
-    if (llSubStringIndex(desc, "INSTALL:") != -1) {
-        list descParts = llParseString2List(desc, ["|"], []);
-        integer i;
-        integer found = FALSE;
-        for (i = 0; i < llGetListLength(descParts) && !found; i++) {
-            string part = llList2String(descParts, i);
-            if (llSubStringIndex(part, "INSTALL:") == 0) {
-                list installParts = llParseString2List(part, [":"], []);
-                if (llGetListLength(installParts) >= 3) {
-                    gInstallDate = llList2String(installParts, 1);
-                    gInstallTimestamp = (integer)llList2String(installParts, 2);
-                    integer ageInDays = (llGetUnixTime() - gInstallTimestamp) / 86400;
-                    llOwnerSay("Install data loaded: " + gInstallDate + " (Age: " + (string)ageInDays + " days)");
-                }
-                found = TRUE;
-            }
-        }
-    }
+string convertTimestampToDate(integer timestamp) {
+    if (timestamp <= 0) return "Unknown";
+    
+    list months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    string dateStr = llGetDate();
+    
+    return dateStr;
 }
 
 integer getAccessLevel(key id) {
@@ -237,6 +183,100 @@ broadcastConfig() {
     llMessageLinked(LINK_SET, UPDATE_CONFIG, config_string, NULL_KEY);
     llMessageLinked(LINK_SET, UPDATE_UNIT_INFO, gUnitName, NULL_KEY);
     llMessageLinked(LINK_SET, UPDATE_WEARER_ADMIN_MODE, (string)gWearerAdminMode, NULL_KEY);
+}
+
+openModulesMenu(key user, integer page) {
+    integer access = getAccessLevel(user);
+    if (access < ACCESS_TRUSTED) {
+        llInstantMessage(user, "Access denied. Trusted user or Administrator permissions required.");
+        return;
+    }
+    
+    // Filter out PERMISSIONS and DIAGNOSTICS from module list (they're in main menu now)
+    list filteredModules = [];
+    integer i;
+    for (i = 0; i < llGetListLength(gActiveModules); i++) {
+        string moduleName = llList2String(gActiveModules, i);
+        if (moduleName != "Permissions" && moduleName != "Diagnostics") {
+            filteredModules += [moduleName];
+        }
+    }
+    
+    gCurrentModulePage = page;
+    integer totalModules = llGetListLength(filteredModules);
+    integer startIndex = page * gModulesPerPage;
+    integer endIndex = startIndex + gModulesPerPage - 1;
+    if (endIndex >= totalModules) endIndex = totalModules - 1;
+    
+    string dialog = "\n[ OTHER MODULES ]\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    dialog += "Unit: " + gUnitName + "\n";
+    dialog += "Page " + (string)(page + 1) + " of " + (string)(((totalModules - 1) / gModulesPerPage) + 1) + "\n";
+    dialog += "Showing " + (string)(startIndex + 1) + "-" + (string)(endIndex + 1) + " of " + (string)totalModules + " modules\n\n";
+    dialog += "Select module:";
+    
+    list buttons = [];
+    
+    // Add modules for current page
+    for (i = startIndex; i <= endIndex && i < totalModules; i++) {
+        string moduleName = llList2String(filteredModules, i);
+        // Truncate long module names for buttons
+        if (llStringLength(moduleName) > 12) {
+            moduleName = llGetSubString(moduleName, 0, 11);
+        }
+        buttons += [moduleName];
+    }
+    
+    // Add SPEECH MODE if we have room
+    if (llGetListLength(buttons) < gModulesPerPage) {
+        buttons += ["SPEECH MODE"];
+    }
+    
+    // Add navigation buttons
+    if (page > 0) {
+        buttons += ["<< Prev"];
+    }
+    if (endIndex < totalModules - 1) {
+        buttons += ["Next >>"];
+    }
+    
+    buttons += ["Close", "-Main-"]; // Return to main menu
+    
+    open_menu(user, dialog, buttons);
+}
+
+// Send status updates to synced wearer HUD
+sendWearerHudStatus() {
+    if (gSyncedWearerHudKey == NULL_KEY) return;
+    
+    string primaryAdminName = "Unknown";
+    if (llGetListLength(gAdministrators) > 0) {
+        primaryAdminName = llKey2Name(gPrimaryAdmin);
+        if (primaryAdminName == "") primaryAdminName = "Unknown Admin";
+    }
+    
+    string statusData = "WEARER_HUD_STATUS_UPDATE|" + (string)llGetKey() + "|" +
+                       (string)gBatteryLevel + "|" +
+                       gPersonaName + "|" +
+                       gPersonaTone + "|" +
+                       primaryAdminName + "|" +
+                       (string)gIsSecure + "|" +
+                       (string)gPowerState + "|" +
+                       (string)gWearerAdminMode + "|" +
+                       gInstallDate;
+    
+    llRegionSay(gStationLinkChannel, statusData);
+}
+
+// Send module information to synced wearer HUD
+sendWearerHudModules() {
+    if (gSyncedWearerHudKey == NULL_KEY) return;
+    
+    string moduleData = "WEARER_HUD_MODULE_UPDATE|" + (string)llGetKey() + "|" +
+                       llList2CSV(gRegisteredModules) + "|" +
+                       llList2CSV(gActiveModules);
+    
+    llRegionSay(gStationLinkChannel, moduleData);
 }
 
 handleMenuCommand(key user, string command) {
@@ -298,18 +338,47 @@ handleMenuCommand(key user, string command) {
         llInstantMessage(user, "Unit attachment lock: UNLOCKED.");
         llInstantMessage(wearer, "// Attachment lock disengaged. //");
     } 
-    else if (command == "MODULES" && access >= ACCESS_TRUSTED) {
-        dialog = "\n[ MODULES ]\nSelect a module to configure.";
-        dynamicModuleButtons = base_SubMenu_Modules_Buttons;
-        
-        moduleCount = llGetListLength(gActiveModules);
-        for (i = 0; i < moduleCount; i++) {
-            moduleName = llList2String(gActiveModules, i);
-            dynamicModuleButtons = [moduleName] + dynamicModuleButtons;
+    else if (command == "PERMISSIONS" && access >= ACCESS_ADMIN) {
+        // Direct access to permissions module
+        llMessageLinked(LINK_SET, OPEN_MY_MENU, (string)user, NULL_KEY);
+        // Find and tell permissions module specifically
+        integer permIndex = llListFindList(gActiveModules, ["Permissions"]);
+        if (permIndex != -1) {
+            llMessageLinked(LINK_SET, OPEN_MY_MENU, (string)user, NULL_KEY);
+        } else {
+            llInstantMessage(user, "Permissions module not found or inactive.");
         }
-        open_menu(user, dialog, dynamicModuleButtons);
+    }
+    else if (command == "DIAGNOSTICS" && access >= ACCESS_TRUSTED) {
+        // Direct access to diagnostics module
+        integer diagIndex = llListFindList(gActiveModules, ["Diagnostics"]);
+        if (diagIndex != -1) {
+            llMessageLinked(LINK_SET, OPEN_MY_MENU, (string)user, NULL_KEY);
+        } else {
+            llInstantMessage(user, "Diagnostics module not found or inactive.");
+        }
+    }
+    else if (command == "MODULES" && access >= ACCESS_TRUSTED) {
+        // Open modules menu with paging
+        openModulesMenu(user, 0);
     } 
-    else if (llListFindList(gActiveModules, [command]) != -1 || command == "Persona" || command == "SPEECH MODE" || command == "Permissions") {
+    else if (command == "<< Prev") {
+        if (gCurrentModulePage > 0) {
+            openModulesMenu(user, gCurrentModulePage - 1);
+        }
+    }
+    else if (command == "Next >>") {
+        openModulesMenu(user, gCurrentModulePage + 1);
+    }
+    else if (command == "-Main-") {
+        // Return to main menu - handled by touch event
+        return;
+    }
+    else if (command == "Close") {
+        llInstantMessage(user, "Menu closed.");
+        return;
+    }
+    else if (llListFindList(gActiveModules, [command]) != -1 || command == "Persona" || command == "SPEECH MODE") {
         llMessageLinked(LINK_SET, OPEN_MY_MENU, (string)user, NULL_KEY);
     }
     else if (access < ACCESS_WEARER) {
@@ -322,44 +391,30 @@ default {
     state_entry() {
         wearer = llGetOwner();
         gPrimaryAdmin = llGetOwner();
+        menu_channel = -1000 - (integer)("0x" + llGetSubString((string)wearer, -7, -1));
         
-        string desc = llGetObjectDesc();
-        if (desc != "" && (key)desc != NULL_KEY) {
-            gAdministrators = [(key)desc];
-        } else {
-            gAdministrators = [gPrimaryAdmin];
-        }
-        
-        menu_channel = (integer)("0x" + llGetSubString(llGetKey(), -7, -1));
-        gRegisteredModules = [];
-        gActiveModules = [];
+        gInstallTimestamp = 0;
+        gInstallDate = "";
+        gCurrentModulePage = 0;
         
         llSetTimerEvent(60.0);
-        llListen(gStationLinkChannel, "", NULL_KEY, "");
-        
-        loadInstallData();
-        
-        string modeStatus = "ENABLED";
-        if (!gWearerAdminMode) modeStatus = "DISABLED";
-        llOwnerSay("A.R.I.A. Main Module v10.4 initialized. Wearer Admin Mode: " + modeStatus);
-        broadcastConfig();
         updateHoverText();
+        broadcastConfig();
+        
+        llOwnerSay("A.R.I.A. Unit Master Kernel v10.6 initialized.");
+        llOwnerSay("CHANGELOG v10.6: Fixed syntax error - moved function definitions outside state block");
     }
 
-    dataserver(key requested, string data) {
-        // No longer needed - removed notecard functionality
-    }
-
-    touch_start(integer total_number) {
+    touch_start(integer num) {
         key toucher = llDetectedKey(0);
-        integer access;
+        integer access = getAccessLevel(toucher);
         list buttons;
         
-        if (gPendingSyncProgrammer == toucher && getAccessLevel(toucher) >= ACCESS_ADMIN) {
+        if (gPendingSyncProgrammer != NULL_KEY && toucher == wearer) {
             llRegionSay(gStationLinkChannel, "SYNC_SUCCESS|" + (string)llGetKey() + "|" + gUnitName);
+            llInstantMessage(gPendingSyncProgrammer, "Sync with " + gUnitName + " confirmed!");
+            llInstantMessage(wearer, "Programming station sync confirmed.");
             gPendingSyncProgrammer = NULL_KEY;
-            llSetTimerEvent(60.0);
-            llInstantMessage(toucher, "Sync with Programming Station successful.");
             return;
         }
         
@@ -455,7 +510,7 @@ default {
         }
         
         if (access >= ACCESS_ADMIN) {
-            buttons = ["MODULES", "HOME", "Set Home", "SOS"];
+            buttons = ["PERMISSIONS", "DIAGNOSTICS", "MODULES", "HOME", "Set Home", "SOS"];
             if (gIsSecure) {
                 buttons += ["[UNLOCK]"];
             } else {
@@ -463,7 +518,7 @@ default {
             }
             buttons += ["POWER OFF"];
         } else if (access >= ACCESS_TRUSTED) {
-            buttons = ["MODULES", "HOME", "SOS"];
+            buttons = ["DIAGNOSTICS", "MODULES", "HOME", "SOS"];
         } else {
             buttons = ["HOME", "SOS"];
         }
@@ -471,51 +526,48 @@ default {
         open_menu(toucher, gMainMenuDialog, buttons);
     }
 
-    link_message(integer s, integer n, string m, key id) {
-        if (n == MODULE_REGISTER) {
-            if (llListFindList(gRegisteredModules, [m]) == -1) {
-                gRegisteredModules += [m];
-                gActiveModules += [m];
-                llOwnerSay("Module registered: " + m);
+    link_message(integer sender, integer num, string msg, key id) {
+        if (num == MODULE_REGISTER) {
+            if (llListFindList(gRegisteredModules, [msg]) == -1) {
+                gRegisteredModules += [msg];
+                gActiveModules += [msg];
+                llOwnerSay("Module registered: " + msg);
             }
-        } else if (n == UPDATE_PERSONA_STATUS) {
-            gCurrentPersona = m;
-            gPersonaName = m;  // Update hover text persona name
+        } 
+        else if (num == UPDATE_BATTERY) {
+            gBatteryLevel = (float)msg;
             updateHoverText();
-        }
-        else if (n == UPDATE_HOVER_DATA) {
-            list parts = llParseString2List(m, ["|"], []);
-            if (llList2String(parts, 0) == "PERSONA") {
-                gPersonaName = llList2String(parts, 1);
-                gPersonaTone = llList2String(parts, 2);
-                gArousalLevel = (integer)llList2String(parts, 3);
-                gStimulationLevel = (integer)llList2String(parts, 4);
-                gPainLevel = (integer)llList2String(parts, 5);
-                gStressLevel = (integer)llList2String(parts, 6);
+        } 
+        else if (num == UPDATE_CONFIG) {
+            list parts = llParseString2List(msg, ["|"], []);
+            if (llGetListLength(parts) >= 2) {
+                gAdministrators = llCSV2List(llList2String(parts, 0));
+                gTrustedUsers = llCSV2List(llList2String(parts, 1));
+            }
+        } 
+        else if (num == UPDATE_UNIT_INFO) {
+            gUnitName = msg;
+            updateHoverText();
+        } 
+        else if (num == UPDATE_PERSONA_STATUS) {
+            list parts = llParseString2List(msg, ["|"], []);
+            if (llGetListLength(parts) >= 2) {
+                gPersonaName = llList2String(parts, 0);
+                gPersonaTone = llList2String(parts, 1);
                 updateHoverText();
             }
-        }
-        else if (n == UPDATE_USER_LISTS) {
-            list parts = llParseString2List(m, ["|"], []);
+        } 
+        else if (num == UPDATE_USER_LISTS) {
+            list parts = llParseString2List(msg, ["|"], []);
             if (llGetListLength(parts) >= 2) {
-                string admin_csv = llList2String(parts, 0);
-                string trusted_csv = llList2String(parts, 1);
-                if (admin_csv != "") gAdministrators = llCSV2List(admin_csv);
-                if (trusted_csv != "") gTrustedUsers = llCSV2List(trusted_csv);
+                gAdministrators = llCSV2List(llList2String(parts, 0));
+                gTrustedUsers = llCSV2List(llList2String(parts, 1));
                 broadcastConfig();
             }
-        }
-        else if (n == UPDATE_WEARER_ADMIN_MODE) {
-            gWearerAdminMode = (integer)m;
-            string modeStatus = "DISABLED";
-            if (gWearerAdminMode) modeStatus = "ENABLED";
-            llOwnerSay("Wearer Admin Mode " + modeStatus + " by administrator.");
-            
-            if (!gWearerAdminMode) {
-                llInstantMessage(wearer, "// Administrator privileges have been revoked. Access limited to basic functions. //");
-            } else if (gWearerAdminMode) {
-                llInstantMessage(wearer, "// Administrator privileges have been restored. //");
-            }
+        } 
+        else if (num == UPDATE_WEARER_ADMIN_MODE) {
+            gWearerAdminMode = (integer)msg;
+            llOwnerSay("Wearer admin mode: " + (string)gWearerAdminMode);
         }
     }
 
@@ -528,17 +580,32 @@ default {
                 gPendingSyncProgrammer = (key)llList2String(parts, 1);
                 llSetTimerEvent(30.0);
                 llInstantMessage(gPendingSyncProgrammer, "SYNC REQUESTED: Please touch the " + gUnitName + " unit to confirm the link.");
-            } else if (command == "HUD_SYNC_REQUEST") {
+            } 
+            else if (command == "HUD_SYNC_REQUEST") {
                 gSyncedAdminHudKey = id;
                 llRegionSay(gStationLinkChannel, "HUD_SYNC_SUCCESS|" + (string)llGetKey() + "|" + (string)llList2String(parts, 1));
-            } else if (command == "WEARER_HUD_SYNC_REQUEST" && (key)llList2String(parts, 1) == wearer) {
+            } 
+            else if (command == "WEARER_HUD_SYNC_REQUEST" && (key)llList2String(parts, 1) == wearer) {
                 gSyncedWearerHudKey = id;
                 llRegionSay(gStationLinkChannel, "HUD_SYNC_SUCCESS|" + (string)llGetKey() + "|" + (string)llList2String(parts, 1));
-            } else if (command == "CHARGE_START" && (key)llList2String(parts, 1) == llGetKey()) {
+                llOwnerSay("Wearer HUD connected: " + llKey2Name(id));
+            } 
+            else if (command == "WEARER_HUD_STATUS_REQUEST" && (key)llList2String(parts, 1) == llGetKey() && (key)llList2String(parts, 2) == wearer) {
+                // Send comprehensive status to wearer HUD
+                sendWearerHudStatus();
+            }
+            else if (command == "WEARER_HUD_FULL_SYNC" && (key)llList2String(parts, 1) == llGetKey() && (key)llList2String(parts, 2) == wearer) {
+                // Send full sync data to wearer HUD
+                sendWearerHudStatus();
+                sendWearerHudModules();
+            }
+            else if (command == "CHARGE_START" && (key)llList2String(parts, 1) == llGetKey()) {
                 gIsCharging = TRUE;
-            } else if (command == "CHARGE_STOP" && (key)llList2String(parts, 1) == llGetKey()) {
+            } 
+            else if (command == "CHARGE_STOP" && (key)llList2String(parts, 1) == llGetKey()) {
                 gIsCharging = FALSE;
-            } else if (command == "REMOTE_COMMAND") {
+            } 
+            else if (command == "REMOTE_COMMAND") {
                 handleMenuCommand((key)llList2String(parts, 1), llList2String(parts, 2));
             }
             return;
@@ -558,84 +625,75 @@ default {
                     llInstantMessage(id, "Home landmark updated successfully to:\n" + gHomeLandmark);
                     llOwnerSay("Home landmark changed by " + llKey2Name(id) + " to: " + gHomeLandmark);
                 } else {
-                    llInstantMessage(id, "Invalid SLURL format. Please enter a valid Second Life map URL starting with:\nhttp://maps.secondlife.com/");
+                    llInstantMessage(id, "Invalid SLURL format. Please use the format:\nhttp://maps.secondlife.com/secondlife/Region%20Name/128/128/22");
                 }
                 
                 gMenuState = MENU_STATE_NONE;
-            } else {
-                handleMenuCommand(id, msg);
+                return;
             }
-            return;
-        }
-
-        if (chan == 0 && id == llGetOwner()) {
-            if (llGetSubString(msg, 0, 7) == "@version") { 
-                llInstantMessage(gPrimaryAdmin, "RLV Version Report: " + llGetSubString(msg, 9, -1)); 
-            }
-            else if (llGetSubString(msg, 0, 11) == "@attachlist") { 
-                llInstantMessage(gPrimaryAdmin, "Attachment List Report: " + llGetSubString(msg, 13, -1)); 
-            }
+            
+            handleMenuCommand(id, msg);
         }
     }
 
     timer() {
         if (gPendingSyncProgrammer != NULL_KEY) {
-            llInstantMessage(gPendingSyncProgrammer, "Sync request for " + gUnitName + " has timed out.");
+            llInstantMessage(gPendingSyncProgrammer, "Sync request timed out.");
             gPendingSyncProgrammer = NULL_KEY;
-            llSetTimerEvent(60.0);
-            return;
         }
         
-        llListenRemove(gDialogHandle);
-        llListenRemove(gTextBoxHandle);
-        gMenuState = MENU_STATE_NONE;
-        
-        if (!gPowerState) return;
-        
-        if (gIsCharging && gBatteryLevel < 100.0) { 
-            gBatteryLevel += gBatteryChargeRate; 
-            if (gBatteryLevel > 100.0) gBatteryLevel = 100.0; 
-        }
-        else if (!gIsCharging && gBatteryLevel > 0.0) { 
-            gBatteryLevel -= gBatteryDrainRate; 
-        }
-        
-        if (gBatteryLevel <= 0.0 && gPowerState) { 
-            gBatteryLevel = 0.0; 
-            gPowerState = FALSE; 
-            llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY); 
-            llSay(0, "CRITICAL POWER FAILURE. SYSTEM OFFLINE."); 
-            updateHoverText();
-        }
-        if (gBatteryLevel > 0.0 && !gPowerState) { 
-            gPowerState = TRUE; 
-            llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "ON", NULL_KEY); 
-            llSay(0, "Minimum power level reached. Systems rebooting."); 
-            broadcastConfig(); 
-            updateHoverText();
-        }
-        
-        string status_string = "STATUS_BROADCAST|" + gUnitName + "|" + (string)gBatteryLevel + "|" + gCurrentPersona + "|";
         if (gPowerState) {
-            status_string += "Online";
-        } else {
-            status_string += "Offline";
+            // Battery management
+            if (gIsCharging) {
+                gBatteryLevel += gBatteryChargeRate;
+                if (gBatteryLevel > 100.0) gBatteryLevel = 100.0;
+            } else {
+                gBatteryLevel -= gBatteryDrainRate;
+                if (gBatteryLevel < 0.0) gBatteryLevel = 0.0;
+            }
+            
+            // Low battery warning
+            if (gBatteryLevel <= 10.0 && gBatteryLevel > 9.0) {
+                llInstantMessage(wearer, "// WARNING: Battery level critical (" + (string)((integer)gBatteryLevel) + "%) //");
+                llInstantMessage(gPrimaryAdmin, "Unit " + gUnitName + " battery critical: " + (string)((integer)gBatteryLevel) + "%");
+            }
+            
+            // Auto-shutdown on critical battery
+            if (gBatteryLevel <= 1.0) {
+                gPowerState = FALSE;
+                llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY);
+                llInstantMessage(wearer, "// UNIT SHUTDOWN: Battery depleted //");
+                llInstantMessage(gPrimaryAdmin, "Unit " + gUnitName + " auto-shutdown due to battery depletion.");
+                llSetTimerEvent(0.0);
+            }
+            
+            updateHoverText();
+            llMessageLinked(LINK_SET, UPDATE_BATTERY, (string)gBatteryLevel, NULL_KEY);
+            
+            // Send status updates to synced wearer HUD
+            if (gSyncedWearerHudKey != NULL_KEY) {
+                sendWearerHudStatus();
+            }
         }
         
-        if (gSyncedAdminHudKey != NULL_KEY) { 
-            llRegionSayTo(gSyncedAdminHudKey, gStationLinkChannel, status_string); 
+        if (gPowerState) {
+            llSetTimerEvent(60.0);
         }
-        if (gSyncedWearerHudKey != NULL_KEY) { 
-            llRegionSayTo(gSyncedWearerHudKey, gStationLinkChannel, status_string); 
-        }
-        
-        llMessageLinked(LINK_SET, UPDATE_BATTERY, (string)gBatteryLevel, NULL_KEY);
-        updateHoverText();
     }
     
-    changed(integer c) {
-        if (c & CHANGED_OWNER) {
+    on_rez(integer start_param) {
+        llResetScript();
+    }
+    
+    changed(integer change) {
+        if (change & CHANGED_OWNER) {
             llResetScript();
+        }
+        if (change & CHANGED_LINK) {
+            llOwnerSay("Link set changed. Modules may need to re-register.");
+            // Reset module lists and let them re-register
+            gRegisteredModules = [];
+            gActiveModules = [];
         }
     }
 }
