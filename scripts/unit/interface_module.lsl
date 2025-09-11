@@ -1,6 +1,7 @@
 //-- A.R.I.A. Interface RLV Module (Add-on)
-//-- Version 2.0 - CRITICAL FIXES & IMPROVEMENTS
-//-- Fixed RLV commands, improved UI restrictions, enhanced user feedback
+//-- Version 2.1 - FIXED PERMISSIONS + UI RESTRICTIONS + ENHANCED FEEDBACK
+//-- CHANGELOG v2.1: Integrated proper permissions system with master kernel synchronization
+//-- CHANGELOG v2.0: Fixed RLV commands, improved UI restrictions, enhanced user feedback
 
 // --- LINKED MESSAGE CODES ---
 integer UPDATE_BATTERY = 101;
@@ -9,14 +10,23 @@ integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
 
+// --- PERMISSION VARIABLES ---
+list gAdministrators;
+list gTrustedUsers;
+key wearer;
+integer gWearerAdminMode = TRUE;
+integer gConfigReceived = FALSE;
+
+// --- PERMISSION LEVELS ---
+integer ACCESS_ADMIN = 4;
+integer ACCESS_TRUSTED = 3;
+integer ACCESS_WEARER = 2;
+integer ACCESS_PUBLIC = 1;
+
 // --- STATE VARIABLES ---
 float gBatteryLevel = 100.0;
 integer gMenuChannel;
 integer gListenHandle;
-key gAdministrator;
-key gWearer;
-list gAdministrators;
-list gTrustedUsers;
 integer gPowerState = TRUE;
 
 // --- MODULE STATE ---
@@ -28,8 +38,55 @@ integer gEditHidden = FALSE;
 integer gBuildHidden = FALSE;
 integer gRadarHidden = FALSE;
 
-// --- HELPER FUNCTIONS ---
+// --- RESTRICTION TRACKING ---
+integer gRestrictionsActive = FALSE;
+string gLastActionBy = "";
+
+// --- PERMISSION FUNCTIONS ---
+integer getAccessLevel(key id) {
+    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
+    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
+    
+    if (id == wearer) {
+        if (gWearerAdminMode) {
+            return ACCESS_ADMIN;
+        } else {
+            return ACCESS_WEARER;
+        }
+    }
+    
+    return ACCESS_PUBLIC;
+}
+
+integer checkModuleAccess(key user, integer requiredLevel, string moduleName) {
+    integer access = getAccessLevel(user);
+    
+    if (access < requiredLevel) {
+        string levelName = "Public";
+        if (requiredLevel == ACCESS_WEARER) levelName = "Wearer";
+        else if (requiredLevel == ACCESS_TRUSTED) levelName = "Trusted User";
+        else if (requiredLevel == ACCESS_ADMIN) levelName = "Administrator";
+        
+        llInstantMessage(user, "Access denied. " + levelName + " permissions required for " + moduleName + ".");
+        return FALSE;
+    }
+    
+    if (!gConfigReceived) {
+        llInstantMessage(user, "Module permissions not synchronized. Please try again in a moment.");
+        return FALSE;
+    }
+    
+    return TRUE;
+}
+
+// --- RLV RESTRICTION FUNCTIONS ---
 applyRestrictions() {
+    if (!gPowerState) {
+        // When powered off, clear all restrictions
+        llOwnerSay("@clear");
+        return;
+    }
+    
     string cmd = "@";
     
     // Apply current manual settings
@@ -88,11 +145,53 @@ applyRestrictions() {
     
     // Apply all restrictions at once
     llOwnerSay(cmd);
+    
+    // Update restriction status
+    gRestrictionsActive = (gInvHidden || gMapHidden || gCameraLocked || gIMHidden || gEditHidden || gBuildHidden || gRadarHidden);
 }
 
-openControlMenu(key admin_id) {
+integer countActiveRestrictions() {
+    integer count = 0;
+    if (gInvHidden) count++;
+    if (gMapHidden) count++;
+    if (gCameraLocked) count++;
+    if (gIMHidden) count++;
+    if (gEditHidden) count++;
+    if (gBuildHidden) count++;
+    if (gRadarHidden) count++;
+    return count;
+}
+
+// --- MENU FUNCTIONS ---
+openControlMenu(key user) {
+    integer access = getAccessLevel(user);
+    
     string dialog = "\n[ INTERFACE RLV PROTOCOLS ]\n";
-    dialog += "Current Status:\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    dialog += "Access Level: ";
+    if (access >= ACCESS_ADMIN) {
+        dialog += "ADMINISTRATOR\n";
+    } else if (access >= ACCESS_TRUSTED) {
+        dialog += "TRUSTED USER\n";
+    } else {
+        dialog += "WEARER\n";
+    }
+    
+    dialog += "Config Status: ";
+    if (gConfigReceived) {
+        dialog += "SYNCHRONIZED\n";
+    } else {
+        dialog += "WAITING\n";
+    }
+    
+    dialog += "Battery Level: " + (string)((integer)gBatteryLevel) + "%\n";
+    dialog += "Active Restrictions: " + (string)countActiveRestrictions() + "/7\n";
+    
+    if (gLastActionBy != "") {
+        dialog += "Last Modified By: " + llKey2Name(gLastActionBy) + "\n";
+    }
+    
+    dialog += "\nCurrent Status:\n";
     
     string invStatus = "OFF";
     if (gInvHidden) invStatus = "ON";
@@ -112,40 +211,61 @@ openControlMenu(key admin_id) {
     string buildStatus = "OFF";
     if (gBuildHidden) buildStatus = "ON";
     
+    string radarStatus = "OFF";
+    if (gRadarHidden) radarStatus = "ON";
+    
     dialog += "• Hide Inventory: " + invStatus + "\n";
     dialog += "• Hide Maps: " + mapStatus + "\n";
     dialog += "• Lock Camera: " + camStatus + "\n";
     dialog += "• Hide IM Panel: " + imStatus + "\n";
     dialog += "• Block Edit: " + editStatus + "\n";
     dialog += "• Block Build: " + buildStatus + "\n";
+    dialog += "• Hide Radar: " + radarStatus;
     
     if (gBatteryLevel <= 15.0) {
-        dialog += "\n⚠ Low power interface restrictions active!";
+        dialog += "\n\n⚠ Low power interface restrictions active!";
     }
     
-    list buttons = [
-        "[HIDE INV: " + invStatus + "]",
-        "[HIDE MAPS: " + mapStatus + "]", 
-        "[CAM LOCK: " + camStatus + "]",
-        "[HIDE IM: " + imStatus + "]",
-        "[BLOCK EDIT: " + editStatus + "]",
-        "[BLOCK BUILD: " + buildStatus + "]",
-        "UI BLACKOUT",
-        "RELEASE ALL",
-        "-Main-"
-    ];
+    list buttons = [];
+    
+    // Restriction controls available to trusted users and above
+    if (access >= ACCESS_TRUSTED) {
+        buttons += ["[HIDE INV: " + invStatus + "]"];
+        buttons += ["[HIDE MAPS: " + mapStatus + "]"];
+        buttons += ["[CAM LOCK: " + camStatus + "]"];
+        buttons += ["[HIDE IM: " + imStatus + "]"];
+        buttons += ["[BLOCK EDIT: " + editStatus + "]"];
+        buttons += ["[BLOCK BUILD: " + buildStatus + "]"];
+    }
+    
+    // Advanced controls for administrators
+    if (access >= ACCESS_ADMIN) {
+        buttons += ["[HIDE RADAR: " + radarStatus + "]"];
+        
+        if (gRestrictionsActive) {
+            buttons += ["RELEASE ALL"];
+        }
+        buttons += ["UI BLACKOUT"];
+    }
+    
+    buttons += ["Refresh", "Close", "-Main-"];
     
     llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
 // --- MAIN SCRIPT LOGIC ---
 default {
     state_entry() {
-        gWearer = llGetOwner();
+        wearer = llGetOwner();
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
+        gConfigReceived = FALSE;
+        
+        // Initialize with owner as admin (backup measure)
+        gAdministrators = [wearer];
+        gTrustedUsers = [];
         
         // Initialize with safe defaults
         gInvHidden = FALSE;
@@ -155,6 +275,8 @@ default {
         gEditHidden = FALSE;
         gBuildHidden = FALSE;
         gRadarHidden = FALSE;
+        gRestrictionsActive = FALSE;
+        gLastActionBy = "";
         
         // Register with main module
         llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Interface RLV", NULL_KEY);
@@ -162,11 +284,44 @@ default {
         // Apply initial (unrestricted) state
         applyRestrictions();
         
-        llOwnerSay("Interface RLV module initialized.");
+        llOwnerSay("Interface RLV module v2.1 initialized successfully.");
+        llOwnerSay("CHANGELOG v2.1: Integrated proper permissions system");
     }
 
     link_message(integer sender, integer num, string msg, key id) {
-        if (num == UPDATE_BATTERY) {
+        if (num == UPDATE_CONFIG) {
+            // Receive configuration from master kernel
+            list parts = llParseString2List(msg, ["|"], []);
+            if (llGetListLength(parts) >= 2) {
+                string adminCsv = llList2String(parts, 0);
+                string trustedCsv = llList2String(parts, 1);
+                
+                // Update local lists from master kernel
+                if (adminCsv != "") {
+                    gAdministrators = llCSV2List(adminCsv);
+                } else {
+                    gAdministrators = [wearer]; // Ensure owner is always admin
+                }
+                
+                if (trustedCsv != "") {
+                    gTrustedUsers = llCSV2List(trustedCsv);
+                } else {
+                    gTrustedUsers = [];
+                }
+                
+                gConfigReceived = TRUE;
+                llOwnerSay("Interface RLV permissions updated from master kernel.");
+                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
+                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
+            }
+        }
+        else if (num == OPEN_MY_MENU) {
+            key user = (key)msg;
+            if (checkModuleAccess(user, ACCESS_TRUSTED, "Interface RLV")) {
+                openControlMenu(user);
+            }
+        }
+        else if (num == UPDATE_BATTERY) {
             float oldBattery = gBatteryLevel;
             gBatteryLevel = (float)msg;
             
@@ -180,119 +335,160 @@ default {
                 applyRestrictions();
             }
         }
-        else if (num == UPDATE_CONFIG) {
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llGetListLength(parts) >= 2) {
-                gAdministrators = llCSV2List(llList2String(parts, 0));
-                gTrustedUsers = llCSV2List(llList2String(parts, 1));
-            }
-        }
         else if (num == POWER_STATE_CHANGE) {
             if (msg == "ON") {
                 gPowerState = TRUE;
                 applyRestrictions();
+                llInstantMessage(wearer, "// Interface RLV protocols online //");
             } else {
                 gPowerState = FALSE;
-                // When powered off, remove all restrictions
-                llOwnerSay("@showinv=y,showworldmap=y,showminimap=y,camunlock=y,camdistmax=64.0,showim=y,edit=y,rez=y,shownames=y");
-            }
-        }
-        else if (num == OPEN_MY_MENU) {
-            key user = (key)msg;
-            if (llListFindList(gAdministrators, [user]) != -1 || 
-                llListFindList(gTrustedUsers, [user]) != -1) {
-                gAdministrator = user;
-                openControlMenu(user);
-            } else {
-                llInstantMessage(user, "Access denied. Trusted user or Administrator permissions required.");
+                // When powered off, clear all restrictions
+                llOwnerSay("@clear");
+                llInstantMessage(wearer, "// Interface RLV protocols offline - all restrictions cleared //");
             }
         }
     }
 
-    listen(integer chan, string name, key id, string msg) {
+    listen(integer chan, string name, key id, string message) {
         if (chan != gMenuChannel) return;
         
-        // Verify user still has permissions
-        if (llListFindList(gAdministrators, [id]) == -1 && 
-            llListFindList(gTrustedUsers, [id]) == -1) {
-            llInstantMessage(id, "Access denied. Permissions may have changed.");
+        llListenRemove(gListenHandle);
+        
+        integer access = getAccessLevel(id);
+        
+        if (message == "-Main-" || message == "Close") {
+            if (message == "Close") {
+                llInstantMessage(id, "Interface RLV menu closed.");
+            }
             return;
         }
         
-        llListenRemove(gListenHandle);
-
-        if (msg == "-Main-") {
-            llInstantMessage(id, "Returning to main menu.");
+        if (message == "Refresh") {
+            llInstantMessage(id, "Refreshing interface data...");
+            openControlMenu(id);
             return;
         }
-
-        if (llSubStringIndex(msg, "[HIDE INV:") != -1) {
-            gInvHidden = !gInvHidden;
-            if (gInvHidden) {
-                llInstantMessage(gWearer, "// Inventory access inhibited. //");
+        
+        // Track who made changes
+        gLastActionBy = id;
+        
+        // Handle menu options with permission checks
+        if (llSubStringIndex(message, "[HIDE INV:") != -1) {
+            if (access >= ACCESS_TRUSTED) {
+                gInvHidden = !gInvHidden;
+                if (gInvHidden) {
+                    llInstantMessage(wearer, "// Inventory access inhibited. //");
+                } else {
+                    llInstantMessage(wearer, "// Inventory access restored. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Inventory access restored. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
-        else if (llSubStringIndex(msg, "[HIDE MAPS:") != -1) {
-            gMapHidden = !gMapHidden;
-            if (gMapHidden) {
-                llInstantMessage(gWearer, "// Navigation systems offline. //");
+        else if (llSubStringIndex(message, "[HIDE MAPS:") != -1) {
+            if (access >= ACCESS_TRUSTED) {
+                gMapHidden = !gMapHidden;
+                if (gMapHidden) {
+                    llInstantMessage(wearer, "// Navigation systems offline. //");
+                } else {
+                    llInstantMessage(wearer, "// Navigation systems online. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Navigation systems online. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
-        else if (llSubStringIndex(msg, "[CAM LOCK:") != -1) {
-            gCameraLocked = !gCameraLocked;
-            if (gCameraLocked) {
-                llInstantMessage(gWearer, "// Camera perspective locked. //");
+        else if (llSubStringIndex(message, "[CAM LOCK:") != -1) {
+            if (access >= ACCESS_TRUSTED) {
+                gCameraLocked = !gCameraLocked;
+                if (gCameraLocked) {
+                    llInstantMessage(wearer, "// Camera perspective locked. //");
+                } else {
+                    llInstantMessage(wearer, "// Camera perspective unlocked. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Camera perspective unlocked. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
-        else if (llSubStringIndex(msg, "[HIDE IM:") != -1) {
-            gIMHidden = !gIMHidden;
-            if (gIMHidden) {
-                llInstantMessage(gWearer, "// IM panel access restricted. //");
+        else if (llSubStringIndex(message, "[HIDE IM:") != -1) {
+            if (access >= ACCESS_TRUSTED) {
+                gIMHidden = !gIMHidden;
+                if (gIMHidden) {
+                    llInstantMessage(wearer, "// IM panel access restricted. //");
+                } else {
+                    llInstantMessage(wearer, "// IM panel access restored. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// IM panel access restored. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
-        else if (llSubStringIndex(msg, "[BLOCK EDIT:") != -1) {
-            gEditHidden = !gEditHidden;
-            if (gEditHidden) {
-                llInstantMessage(gWearer, "// Object editing capabilities disabled. //");
+        else if (llSubStringIndex(message, "[BLOCK EDIT:") != -1) {
+            if (access >= ACCESS_TRUSTED) {
+                gEditHidden = !gEditHidden;
+                if (gEditHidden) {
+                    llInstantMessage(wearer, "// Object editing capabilities disabled. //");
+                } else {
+                    llInstantMessage(wearer, "// Object editing capabilities enabled. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Object editing capabilities enabled. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
-        else if (llSubStringIndex(msg, "[BLOCK BUILD:") != -1) {
-            gBuildHidden = !gBuildHidden;
-            if (gBuildHidden) {
-                llInstantMessage(gWearer, "// Object creation capabilities disabled. //");
+        else if (llSubStringIndex(message, "[BLOCK BUILD:") != -1) {
+            if (access >= ACCESS_TRUSTED) {
+                gBuildHidden = !gBuildHidden;
+                if (gBuildHidden) {
+                    llInstantMessage(wearer, "// Object creation capabilities disabled. //");
+                } else {
+                    llInstantMessage(wearer, "// Object creation capabilities enabled. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Object creation capabilities enabled. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
-        else if (msg == "UI BLACKOUT") {
-            gInvHidden = TRUE;
-            gMapHidden = TRUE;
-            gCameraLocked = TRUE;
-            gIMHidden = TRUE;
-            gEditHidden = TRUE;
-            gBuildHidden = TRUE;
-            gRadarHidden = TRUE;
-            llInstantMessage(gWearer, "// Full user interface blackout protocol engaged. //");
+        else if (llSubStringIndex(message, "[HIDE RADAR:") != -1) {
+            if (access >= ACCESS_ADMIN) {
+                gRadarHidden = !gRadarHidden;
+                if (gRadarHidden) {
+                    llInstantMessage(wearer, "// Radar and name displays hidden. //");
+                } else {
+                    llInstantMessage(wearer, "// Radar and name displays restored. //");
+                }
+            } else {
+                llInstantMessage(id, "Access denied. Administrator permissions required.");
+            }
         }
-        else if (msg == "RELEASE ALL") {
-            gInvHidden = FALSE;
-            gMapHidden = FALSE;
-            gCameraLocked = FALSE;
-            gIMHidden = FALSE;
-            gEditHidden = FALSE;
-            gBuildHidden = FALSE;
-            gRadarHidden = FALSE;
-            llInstantMessage(gWearer, "// All user interface protocols released. //");
+        else if (message == "UI BLACKOUT") {
+            if (access >= ACCESS_ADMIN) {
+                gInvHidden = TRUE;
+                gMapHidden = TRUE;
+                gCameraLocked = TRUE;
+                gIMHidden = TRUE;
+                gEditHidden = TRUE;
+                gBuildHidden = TRUE;
+                gRadarHidden = TRUE;
+                llInstantMessage(wearer, "// Full user interface blackout protocol engaged. //");
+                llInstantMessage(id, "Full interface blackout applied.");
+            } else {
+                llInstantMessage(id, "Access denied. Administrator permissions required.");
+            }
+        }
+        else if (message == "RELEASE ALL") {
+            if (access >= ACCESS_ADMIN) {
+                gInvHidden = FALSE;
+                gMapHidden = FALSE;
+                gCameraLocked = FALSE;
+                gIMHidden = FALSE;
+                gEditHidden = FALSE;
+                gBuildHidden = FALSE;
+                gRadarHidden = FALSE;
+                llInstantMessage(wearer, "// All user interface protocols released. //");
+                llInstantMessage(id, "All interface restrictions released.");
+            } else {
+                llInstantMessage(id, "Access denied. Administrator permissions required.");
+            }
+        }
+        else {
+            llInstantMessage(id, "Unknown command: " + message);
         }
         
         // Apply the new restrictions
