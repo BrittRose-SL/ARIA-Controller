@@ -1,6 +1,9 @@
 //-- A.R.I.A. Wardrobe RLV Module (Add-on)
-//-- Version 2.0 - CRITICAL FIXES & IMPROVEMENTS
+//-- Version 2.1 - PERMISSIONS SYSTEM INTEGRATED
 //-- Fixed RLV commands, improved outfit management, enhanced folder handling
+//-- CHANGES v2.1: Integrated standardized permissions system from template,
+//                 Added proper access control for all menu functions,
+//                 Fixed initialization order and permission synchronization
 
 // --- CONFIGURATION ---
 string gRlvRootFolder = "#RLV/~A.R.I.A.";
@@ -12,14 +15,23 @@ integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
 
+// --- PERMISSION VARIABLES (REQUIRED) ---
+list gAdministrators;
+list gTrustedUsers;
+key wearer;
+integer gWearerAdminMode = TRUE;
+integer gConfigReceived = FALSE;
+
+// --- PERMISSION LEVELS (REQUIRED) ---
+integer ACCESS_ADMIN = 4;
+integer ACCESS_TRUSTED = 3;
+integer ACCESS_WEARER = 2;
+integer ACCESS_PUBLIC = 1;
+
 // --- STATE VARIABLES ---
 float gBatteryLevel = 100.0;
 integer gMenuChannel;
 integer gListenHandle;
-key gAdministrator;
-key gWearer;
-list gAdministrators;
-list gTrustedUsers;
 integer gPowerState = TRUE;
 
 // --- MODULE STATE ---
@@ -31,6 +43,52 @@ integer gAttachBlocked = FALSE;
 
 // --- FOLDER STATUS TRACKING ---
 list gFolderStatus; // Parallel list to gDefinedFolders for ON/OFF status
+
+// --- PERMISSION FUNCTIONS (REQUIRED) ---
+
+// This function MUST be included in every module
+integer getAccessLevel(key id) {
+    // Check administrator list first
+    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
+    
+    // Check trusted users list
+    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
+    
+    // Check if it's the wearer
+    if (id == wearer) {
+        // Wearer access depends on wearer admin mode
+        if (gWearerAdminMode) {
+            return ACCESS_ADMIN;
+        } else {
+            return ACCESS_WEARER;
+        }
+    }
+    
+    // Everyone else gets public access
+    return ACCESS_PUBLIC;
+}
+
+// This function should be called at the start of any menu function
+integer checkModuleAccess(key user, integer requiredLevel, string moduleName) {
+    integer access = getAccessLevel(user);
+    
+    if (access < requiredLevel) {
+        string levelName = "Public";
+        if (requiredLevel == ACCESS_WEARER) levelName = "Wearer";
+        else if (requiredLevel == ACCESS_TRUSTED) levelName = "Trusted User";
+        else if (requiredLevel == ACCESS_ADMIN) levelName = "Administrator";
+        
+        llInstantMessage(user, "Access denied. " + levelName + " permissions required for Wardrobe RLV Module.");
+        return FALSE;
+    }
+    
+    if (!gConfigReceived) {
+        llInstantMessage(user, "Module permissions not synchronized. Please try again in a moment.");
+        return FALSE;
+    }
+    
+    return TRUE;
+}
 
 // --- HELPER FUNCTIONS ---
 applyLock() {
@@ -90,9 +148,32 @@ integer getFolderStatus(string folder) {
     return FALSE;
 }
 
-openControlMenu(key admin_id) {
+openControlMenu(key user) {
+    // Check permissions before opening menu
+    if (!checkModuleAccess(user, ACCESS_TRUSTED, "Wardrobe RLV")) {
+        return;
+    }
+    
+    integer access = getAccessLevel(user);
+    
     string dialog = "\n[ WARDROBE RLV PROTOCOLS ]\n";
-    dialog += "RLV Folder: " + gRlvRootFolder + "\n\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    dialog += "Access Level: ";
+    if (access >= ACCESS_ADMIN) {
+        dialog += "ADMINISTRATOR\n";
+    } else if (access >= ACCESS_TRUSTED) {
+        dialog += "TRUSTED USER\n";
+    } else {
+        dialog += "WEARER\n";
+    }
+    
+    dialog += "Config Status: ";
+    if (gConfigReceived) {
+        dialog += "SYNCHRONIZED";
+    } else {
+        dialog += "WAITING";
+    }
+    dialog += "\n\nRLV Folder: " + gRlvRootFolder + "\n\n";
     dialog += "Current Status:\n";
     
     string lockStatus = "UNLOCKED";
@@ -113,24 +194,42 @@ openControlMenu(key admin_id) {
         dialog += "\n⚠ Low power wardrobe restrictions active!";
     }
     
-    list buttons = [
-        "[" + lockStatus + "]",
-        "[DETACH: " + detachStatus + "]",
-        "[ATTACH: " + attachStatus + "]",
-        "Folders",
-        "UNEQUIP ALL",
-        "Show Active",
-        "-Main-"
-    ];
+    list buttons = [];
+    
+    // All trusted users can control basic wardrobe functions
+    if (access >= ACCESS_TRUSTED) {
+        buttons += [
+            "[" + lockStatus + "]",
+            "[DETACH: " + detachStatus + "]",
+            "[ATTACH: " + attachStatus + "]",
+            "Show Active"
+        ];
+    }
+    
+    // Admin-only functions
+    if (access >= ACCESS_ADMIN) {
+        buttons += [
+            "Folders",
+            "UNEQUIP ALL"
+        ];
+    }
+    
+    buttons += ["Close", "-Main-"];
     
     llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
-openFoldersMenu(key admin_id) {
+openFoldersMenu(key user) {
+    // Check admin permissions for folder management
+    if (!checkModuleAccess(user, ACCESS_ADMIN, "Wardrobe RLV Folders")) {
+        return;
+    }
+    
     string dialog = "\n[ WARDROBE FOLDERS ]\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
     dialog += "Toggle outfit folders on/off:\n\n";
     
     list buttons = [];
@@ -158,8 +257,8 @@ openFoldersMenu(key admin_id) {
     buttons += ["-Back-"];
     
     llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
@@ -178,7 +277,7 @@ toggleFolder(string folder) {
             gAttachedFolders = llDeleteSubList(gAttachedFolders, index, index);
         }
         
-        llInstantMessage(gWearer, "// Wardrobe schematic '" + folder + "' unequipped. //");
+        llInstantMessage(wearer, "// Wardrobe schematic '" + folder + "' unequipped. //");
     } else {
         // It's off, turn it on
         llOwnerSay("@attachfolder=" + fullPath + "=force");
@@ -189,14 +288,20 @@ toggleFolder(string folder) {
             gAttachedFolders += [folder];
         }
         
-        llInstantMessage(gWearer, "// Wardrobe schematic '" + folder + "' equipped. //");
+        llInstantMessage(wearer, "// Wardrobe schematic '" + folder + "' equipped. //");
     }
 }
 
 // --- MAIN SCRIPT LOGIC ---
 default {
     state_entry() {
-        gWearer = llGetOwner();
+        wearer = llGetOwner();
+        gConfigReceived = FALSE;
+        
+        // Initialize with owner as admin (backup measure)
+        gAdministrators = [wearer];
+        gTrustedUsers = [];
+        
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
         
         // Initialize with safe defaults
@@ -214,12 +319,46 @@ default {
         // Apply initial (unrestricted) state
         applyLock();
         
-        llOwnerSay("Wardrobe RLV module initialized.");
+        llOwnerSay("Wardrobe RLV Module v2.1 initialized successfully.");
         llOwnerSay("RLV Root Folder: " + gRlvRootFolder);
     }
 
     link_message(integer sender, integer num, string msg, key id) {
-        if (num == UPDATE_BATTERY) {
+        if (num == UPDATE_CONFIG) {
+            // Receive configuration from master kernel
+            list parts = llParseString2List(msg, ["|"], []);
+            if (llGetListLength(parts) >= 2) {
+                string adminCsv = llList2String(parts, 0);
+                string trustedCsv = llList2String(parts, 1);
+                
+                // Update local lists from master kernel
+                if (adminCsv != "") {
+                    gAdministrators = llCSV2List(adminCsv);
+                } else {
+                    gAdministrators = [wearer]; // Ensure owner is always admin
+                }
+                
+                if (trustedCsv != "") {
+                    gTrustedUsers = llCSV2List(trustedCsv);
+                } else {
+                    gTrustedUsers = [];
+                }
+                
+                gConfigReceived = TRUE;
+                llOwnerSay("Wardrobe RLV permissions updated from master kernel.");
+                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
+                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
+            }
+        }
+        else if (num == OPEN_MY_MENU) {
+            key user = (key)msg;
+            
+            // Minimum trusted user access required for Wardrobe RLV
+            if (checkModuleAccess(user, ACCESS_TRUSTED, "Wardrobe RLV")) {
+                openControlMenu(user);
+            }
+        }
+        else if (num == UPDATE_BATTERY) {
             float oldBattery = gBatteryLevel;
             gBatteryLevel = (float)msg;
             
@@ -231,124 +370,137 @@ default {
                 applyLock();
             }
         }
-        else if (num == UPDATE_CONFIG) {
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llGetListLength(parts) >= 2) {
-                gAdministrators = llCSV2List(llList2String(parts, 0));
-                gTrustedUsers = llCSV2List(llList2String(parts, 1));
-            }
-        }
         else if (num == POWER_STATE_CHANGE) {
-            if (msg == "ON") {
-                gPowerState = TRUE;
-                applyLock();
-            } else {
-                gPowerState = FALSE;
+            gPowerState = (integer)msg;
+            
+            if (!gPowerState) {
                 // When powered off, remove all restrictions
                 llOwnerSay("@detach=y,attach=y,addoutfit=y,detachall=y,unsharedwear:" + gRlvRootFolder + "=rem");
-            }
-        }
-        else if (num == OPEN_MY_MENU) {
-            key user = (key)msg;
-            if (llListFindList(gAdministrators, [user]) != -1 || 
-                llListFindList(gTrustedUsers, [user]) != -1) {
-                gAdministrator = user;
-                openControlMenu(user);
             } else {
-                llInstantMessage(user, "Access denied. Trusted user or Administrator permissions required.");
+                applyLock();
             }
         }
     }
 
     listen(integer chan, string name, key id, string msg) {
-        integer i;
-        string folder;
-        string report;
-        
         if (chan != gMenuChannel) return;
         
-        // Verify user still has permissions
-        if (llListFindList(gAdministrators, [id]) == -1 && 
-            llListFindList(gTrustedUsers, [id]) == -1) {
-            llInstantMessage(id, "Access denied. Permissions may have changed.");
+        llListenRemove(gListenHandle);
+        
+        // Always check permissions in listen events
+        integer access = getAccessLevel(id);
+        
+        if (msg == "-Main-" || msg == "Close") {
+            if (msg == "Close") {
+                llInstantMessage(id, "Wardrobe RLV menu closed.");
+            }
             return;
         }
         
-        llListenRemove(gListenHandle);
-
-        if (msg == "-Main-") {
-            llInstantMessage(id, "Returning to main menu.");
-            return;
-        }
-        else if (msg == "-Back-") {
+        if (msg == "-Back-") {
             openControlMenu(id);
             return;
         }
 
+        // Handle menu options with permission checks
         if (llSubStringIndex(msg, "[LOCKED]") != -1 || llSubStringIndex(msg, "[UNLOCKED]") != -1) {
-            gIsLocked = !gIsLocked;
-            if (gIsLocked) {
-                llInstantMessage(gWearer, "// Wardrobe access restricted. Manual override disabled. //");
+            if (access >= ACCESS_TRUSTED) {
+                gIsLocked = !gIsLocked;
+                if (gIsLocked) {
+                    llInstantMessage(wearer, "// Wardrobe access restricted. Manual override disabled. //");
+                } else {
+                    llInstantMessage(wearer, "// Wardrobe access restored. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Wardrobe access restored. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
         else if (llSubStringIndex(msg, "[DETACH:") != -1) {
-            gDetachBlocked = !gDetachBlocked;
-            if (gDetachBlocked) {
-                llInstantMessage(gWearer, "// Detachment protocols disabled. //");
+            if (access >= ACCESS_TRUSTED) {
+                gDetachBlocked = !gDetachBlocked;
+                if (gDetachBlocked) {
+                    llInstantMessage(wearer, "// Detachment protocols disabled. //");
+                } else {
+                    llInstantMessage(wearer, "// Detachment protocols enabled. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Detachment protocols enabled. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
         else if (llSubStringIndex(msg, "[ATTACH:") != -1) {
-            gAttachBlocked = !gAttachBlocked;
-            if (gAttachBlocked) {
-                llInstantMessage(gWearer, "// Attachment protocols disabled. //");
+            if (access >= ACCESS_TRUSTED) {
+                gAttachBlocked = !gAttachBlocked;
+                if (gAttachBlocked) {
+                    llInstantMessage(wearer, "// Attachment protocols disabled. //");
+                } else {
+                    llInstantMessage(wearer, "// Attachment protocols enabled. //");
+                }
             } else {
-                llInstantMessage(gWearer, "// Attachment protocols enabled. //");
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
         }
         else if (msg == "Folders") {
-            openFoldersMenu(id);
-            return;
+            if (access >= ACCESS_ADMIN) {
+                openFoldersMenu(id);
+                return;
+            } else {
+                llInstantMessage(id, "Access denied. Administrator permissions required.");
+            }
         }
         else if (msg == "UNEQUIP ALL") {
-            for (i = 0; i < llGetListLength(gAttachedFolders); i++) {
-                folder = llList2String(gAttachedFolders, i);
-                llOwnerSay("@detachfolder=" + gRlvRootFolder + "/" + folder + "=force");
-                updateFolderStatus(folder, FALSE);
+            if (access >= ACCESS_ADMIN) {
+                integer i;
+                string folder;
+                for (i = 0; i < llGetListLength(gAttachedFolders); i++) {
+                    folder = llList2String(gAttachedFolders, i);
+                    llOwnerSay("@detachfolder=" + gRlvRootFolder + "/" + folder + "=force");
+                    updateFolderStatus(folder, FALSE);
+                }
+                gAttachedFolders = [];
+                initializeFolderStatus(); // Reset all to OFF
+                llInstantMessage(wearer, "// All wardrobe schematics unequipped. //");
+            } else {
+                llInstantMessage(id, "Access denied. Administrator permissions required.");
             }
-            gAttachedFolders = [];
-            initializeFolderStatus(); // Reset all to OFF
-            llInstantMessage(gWearer, "// All wardrobe schematics unequipped. //");
         }
         else if (msg == "Show Active") {
-            if (llGetListLength(gAttachedFolders) == 0) {
-                report = "No folders currently attached.";
-            } else {
-                report = "Currently attached folders:\n";
-                for (i = 0; i < llGetListLength(gAttachedFolders); i++) {
-                    report += "• " + llList2String(gAttachedFolders, i) + "\n";
+            if (access >= ACCESS_TRUSTED) {
+                string report;
+                if (llGetListLength(gAttachedFolders) == 0) {
+                    report = "No folders currently attached.";
+                } else {
+                    report = "Currently attached folders:\n";
+                    integer i;
+                    for (i = 0; i < llGetListLength(gAttachedFolders); i++) {
+                        report += "• " + llList2String(gAttachedFolders, i) + "\n";
+                    }
                 }
+                llInstantMessage(id, report);
+                openControlMenu(id);
+                return;
+            } else {
+                llInstantMessage(id, "Access denied. Trusted user permissions required.");
             }
-            llInstantMessage(id, report);
-            openControlMenu(id);
-            return;
         }
         else {
-            // Check if it's a folder toggle
-            for (i = 0; i < llGetListLength(gDefinedFolders); i++) {
-                folder = llList2String(gDefinedFolders, i);
-                if (llSubStringIndex(msg, "[" + folder + ":") != -1) {
-                    toggleFolder(folder);
-                    openFoldersMenu(id);
-                    return;
+            // Check if it's a folder toggle (admin only)
+            if (access >= ACCESS_ADMIN) {
+                integer i;
+                string folder;
+                for (i = 0; i < llGetListLength(gDefinedFolders); i++) {
+                    folder = llList2String(gDefinedFolders, i);
+                    if (llSubStringIndex(msg, "[" + folder + ":") != -1) {
+                        toggleFolder(folder);
+                        openFoldersMenu(id);
+                        return;
+                    }
                 }
+            } else {
+                llInstantMessage(id, "Access denied. Administrator permissions required.");
             }
         }
         
-        // Apply the new restrictions
+        // Apply the new restrictions after any changes
         applyLock();
         llInstantMessage(id, "Wardrobe protocols updated.");
         
