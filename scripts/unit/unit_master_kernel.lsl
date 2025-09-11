@@ -1,6 +1,7 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 10.6 - FIXED SYNTAX ERROR & MENU OVERFLOW & ADDED DIRECT ACCESS
+//-- Version 10.7 - FIXED PERMISSIONS INITIALIZATION & MENU OVERFLOW & ADDED DIRECT ACCESS
 //-- Added centralized hover text management with persona data integration and emoji support
+//-- CHANGELOG v10.7: Fixed critical permissions bug - owner now automatically added as admin on initialization
 //-- CHANGELOG v10.6: Fixed syntax error - moved function definitions outside state block
 //-- CHANGELOG v10.5: Fixed button overflow, moved Permissions and Diagnostics to main menu, added paging support
 
@@ -77,7 +78,37 @@ integer ACCESS_TRUSTED = 3;
 integer ACCESS_WEARER = 2;
 integer ACCESS_PUBLIC = 1;
 
+// --- INITIALIZATION CONTROL ---
+integer gInitialized = FALSE;
+
 // --- HELPER FUNCTIONS ---
+initializePermissions() {
+    // Ensure owner is always in administrators list
+    if (llListFindList(gAdministrators, [wearer]) == -1) {
+        gAdministrators = [wearer] + gAdministrators; // Add owner to front of list
+        llOwnerSay("Owner automatically added as Primary Administrator.");
+    }
+    
+    // Set primary admin to owner
+    gPrimaryAdmin = wearer;
+    
+    // Ensure lists are properly initialized
+    if (llGetListLength(gAdministrators) == 0) {
+        gAdministrators = [wearer];
+        llOwnerSay("Administrator list initialized with owner.");
+    }
+    
+    gInitialized = TRUE;
+    
+    // Broadcast the corrected configuration
+    broadcastConfig();
+    
+    llOwnerSay("Permissions system initialized successfully.");
+    llOwnerSay("Primary Administrator: " + llKey2Name(gPrimaryAdmin));
+    llOwnerSay("Total Administrators: " + (string)llGetListLength(gAdministrators));
+    llOwnerSay("Total Trusted Users: " + (string)llGetListLength(gTrustedUsers));
+}
+
 updateHoverText() {
     string status = "🤖 A.R.I.A. " + gPersonaName;
     
@@ -177,12 +208,22 @@ open_textbox(key id, string prompt) {
 }
 
 broadcastConfig() {
+    // Ensure permissions are initialized before broadcasting
+    if (!gInitialized) {
+        initializePermissions();
+        return;
+    }
+    
     string admin_csv = llList2CSV(gAdministrators);
     string trusted_csv = llList2CSV(gTrustedUsers);
     string config_string = admin_csv + "|" + trusted_csv;
     llMessageLinked(LINK_SET, UPDATE_CONFIG, config_string, NULL_KEY);
     llMessageLinked(LINK_SET, UPDATE_UNIT_INFO, gUnitName, NULL_KEY);
     llMessageLinked(LINK_SET, UPDATE_WEARER_ADMIN_MODE, (string)gWearerAdminMode, NULL_KEY);
+    
+    // Debug output for troubleshooting
+    llOwnerSay("Broadcasting config - Admins: " + (string)llGetListLength(gAdministrators) + 
+               ", Trusted: " + (string)llGetListLength(gTrustedUsers));
 }
 
 openModulesMenu(key user, integer page) {
@@ -307,8 +348,21 @@ handleMenuCommand(key user, string command) {
         llInstantMessage(user, "A.R.I.A. systems shutting down.");
     } 
     else if (command == "SOS" && access >= ACCESS_WEARER) { 
-        llInstantMessage(gPrimaryAdmin, "SOS signal received from " + gUnitName + "!");
-        llInstantMessage(wearer, "SOS signal sent to Primary Administrator.");
+        // Validate primary admin key before sending message
+        if (gPrimaryAdmin != NULL_KEY && gPrimaryAdmin != "") {
+            llInstantMessage(gPrimaryAdmin, "SOS signal received from " + gUnitName + "!");
+        }
+        
+        // Send to all administrators as backup
+        integer i;
+        for (i = 0; i < llGetListLength(gAdministrators); i++) {
+            key admin = (key)llList2String(gAdministrators, i);
+            if (admin != NULL_KEY && admin != "" && admin != wearer) {
+                llInstantMessage(admin, "SOS signal received from " + gUnitName + "!");
+            }
+        }
+        
+        llInstantMessage(wearer, "SOS signal sent to administrators.");
     } 
     else if (command == "HOME" && access >= ACCESS_WEARER) {
         llOwnerSay("@tplm:" + gHomeLandmark + "=force");
@@ -396,13 +450,16 @@ default {
         gInstallTimestamp = 0;
         gInstallDate = "";
         gCurrentModulePage = 0;
+        gInitialized = FALSE;
+        
+        // Initialize permissions first, before anything else
+        initializePermissions();
         
         llSetTimerEvent(60.0);
         updateHoverText();
-        broadcastConfig();
         
-        llOwnerSay("A.R.I.A. Unit Master Kernel v10.6 initialized.");
-        llOwnerSay("CHANGELOG v10.6: Fixed syntax error - moved function definitions outside state block");
+        llOwnerSay("A.R.I.A. Unit Master Kernel v10.7 initialized.");
+        llOwnerSay("CHANGELOG v10.7: Fixed permissions initialization - owner auto-added as admin");
     }
 
     touch_start(integer num) {
@@ -425,7 +482,10 @@ default {
         if (!gPowerState) return;
 
         access = getAccessLevel(toucher);
-        if (access < ACCESS_WEARER) return;
+        if (access < ACCESS_WEARER) {
+            llInstantMessage(toucher, "Access denied. You do not have permission to access this unit.");
+            return;
+        }
 
         gMainMenuDialog = "\nUnit Name: " + gUnitName + "\n";
         
@@ -509,6 +569,9 @@ default {
             }
         }
         
+        // Debug access level information
+        gMainMenuDialog += "\nAccess Level: " + (string)access;
+        
         if (access >= ACCESS_ADMIN) {
             buttons = ["PERMISSIONS", "DIAGNOSTICS", "MODULES", "HOME", "Set Home", "SOS"];
             if (gIsSecure) {
@@ -532,6 +595,9 @@ default {
                 gRegisteredModules += [msg];
                 gActiveModules += [msg];
                 llOwnerSay("Module registered: " + msg);
+                
+                // Send config to newly registered module
+                broadcastConfig();
             }
         } 
         else if (num == UPDATE_BATTERY) {
@@ -563,6 +629,7 @@ default {
                 gAdministrators = llCSV2List(llList2String(parts, 0));
                 gTrustedUsers = llCSV2List(llList2String(parts, 1));
                 broadcastConfig();
+                llOwnerSay("User lists updated from Permissions module.");
             }
         } 
         else if (num == UPDATE_WEARER_ADMIN_MODE) {
@@ -694,6 +761,9 @@ default {
             // Reset module lists and let them re-register
             gRegisteredModules = [];
             gActiveModules = [];
+            // Re-initialize permissions for new linkset
+            gInitialized = FALSE;
+            initializePermissions();
         }
     }
 }
