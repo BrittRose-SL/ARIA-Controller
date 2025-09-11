@@ -424,21 +424,21 @@ default {
             
             integer access = getAccessLevel(id);
             
-            if (msg == "-Main-" || msg == "Close") {
-                if (msg == "Close") {
+            if (message == "-Main-" || message == "Close") {
+                if (message == "Close") {
                     llInstantMessage(id, "Communications menu closed.");
                 }
                 return;
             }
             
-            if (msg == "Refresh") {
+            if (message == "Refresh") {
                 llInstantMessage(id, "Refreshing communications data...");
                 openCommsMenu(id);
                 return;
             }
             
             // Handle menu options with permission checks
-            if (msg == "Test Comms") {
+            if (message == "Test Comms") {
                 if (access >= ACCESS_WEARER) {
                     if (gPowerState && gCommsEnabled) {
                         string testMsg = getPersonaPrefix(gCurrentPersona, gSpeechMode) + " Communications test successful.";
@@ -451,14 +451,14 @@ default {
                     llInstantMessage(id, "Access denied. Wearer permissions required.");
                 }
             }
-            else if (msg == "Channel Info") {
+            else if (message == "Channel Info") {
                 if (access >= ACCESS_WEARER) {
                     llInstantMessage(id, "Communications Channel: " + (string)comms_channel + "\nType on this channel to speak as " + gUnitName + ".");
                 } else {
                     llInstantMessage(id, "Access denied. Wearer permissions required.");
                 }
             }
-            else if (msg == "Enable Comms" || msg == "Disable Comms") {
+            else if (message == "Enable Comms" || message == "Disable Comms") {
                 if (access >= ACCESS_TRUSTED) {
                     gCommsEnabled = !gCommsEnabled;
                     string status = "enabled";
@@ -469,7 +469,7 @@ default {
                     llInstantMessage(id, "Access denied. Trusted user permissions required.");
                 }
             }
-            else if (msg == "Enable Filter" || msg == "Disable Filter") {
+            else if (message == "Enable Filter" || message == "Disable Filter") {
                 if (access >= ACCESS_TRUSTED) {
                     gPersonaFilterEnabled = !gPersonaFilterEnabled;
                     string status = "enabled";
@@ -479,7 +479,7 @@ default {
                     llInstantMessage(id, "Access denied. Trusted user permissions required.");
                 }
             }
-            else if (msg == "Enable Effects" || msg == "Disable Effects") {
+            else if (message == "Enable Effects" || message == "Disable Effects") {
                 if (access >= ACCESS_TRUSTED) {
                     gBatteryEffectsEnabled = !gBatteryEffectsEnabled;
                     string status = "enabled";
@@ -489,14 +489,14 @@ default {
                     llInstantMessage(id, "Access denied. Trusted user permissions required.");
                 }
             }
-            else if (msg == "Set Channel") {
+            else if (message == "Set Channel") {
                 if (access >= ACCESS_ADMIN) {
                     llInstantMessage(id, "Channel change feature not yet implemented. Current channel: " + (string)comms_channel);
                 } else {
                     llInstantMessage(id, "Access denied. Administrator permissions required.");
                 }
             }
-            else if (msg == "Reset Config") {
+            else if (message == "Reset Config") {
                 if (access >= ACCESS_ADMIN) {
                     gCommsEnabled = TRUE;
                     gPersonaFilterEnabled = TRUE;
@@ -508,7 +508,7 @@ default {
                 }
             }
             else {
-                llInstantMessage(id, "Unknown command: " + msg);
+                llInstantMessage(id, "Unknown command: " + message);
             }
             
             // Reopen menu after action
