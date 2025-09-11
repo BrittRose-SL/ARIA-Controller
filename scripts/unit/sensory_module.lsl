@@ -1,8 +1,12 @@
 //-- A.R.I.A. Sensory Module (Add-on)
-//-- Version 1.1 - Syntax Error Fix
-//-- Handles erotic and pain sensory experiences with external device integration
-//-- Supports Lovense, RLV furniture, INM, Xcite, and other adult scripted objects
-//-- CHANGELOG: Fixed variable scope issues with channel definitions
+//-- Version 1.2 - FIXED PERMISSIONS SYSTEM + ADULT DEVICE INTEGRATION
+//-- CHANGELOG v1.2:
+//-- - Added new standardized permissions system from template
+//-- - Fixed permission validation in all menu functions
+//-- - Added proper config synchronization with master kernel
+//-- - Improved access level checking for trusted users
+//-- - Added permission status display in menus
+//-- - Adult features require administrator access for safety
 
 // --- CONFIGURATION ---
 integer LOVENSE_CHANNEL = 1337; // Standard Lovense communication channel
@@ -21,14 +25,24 @@ integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
 
+// --- PERMISSION VARIABLES (REQUIRED) ---
+list gAdministrators;
+list gTrustedUsers;
+key wearer;
+integer gWearerAdminMode = TRUE;
+integer gConfigReceived = FALSE;
+
+// --- PERMISSION LEVELS (REQUIRED) ---
+integer ACCESS_ADMIN = 4;
+integer ACCESS_TRUSTED = 3;
+integer ACCESS_WEARER = 2;
+integer ACCESS_PUBLIC = 1;
+
 // --- STATE VARIABLES ---
 float gBatteryLevel = 100.0;
 integer gMenuChannel;
 integer gListenHandle;
 key gAdministrator;
-key gWearer;
-list gAdministrators;
-list gTrustedUsers;
 integer gPowerState = TRUE;
 
 //-- Module State
@@ -53,7 +67,52 @@ integer gShockActive = FALSE;
 integer gPokeActive = FALSE;
 integer gTempRestrictions = FALSE;
 
+// --- PERMISSION FUNCTIONS (REQUIRED) ---
+
+integer getAccessLevel(key id) {
+    // Check administrator list first
+    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
+    
+    // Check trusted users list
+    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
+    
+    // Check if it's the wearer
+    if (id == wearer) {
+        // Wearer access depends on wearer admin mode
+        if (gWearerAdminMode) {
+            return ACCESS_ADMIN;
+        } else {
+            return ACCESS_WEARER;
+        }
+    }
+    
+    // Everyone else gets public access
+    return ACCESS_PUBLIC;
+}
+
+integer checkModuleAccess(key user, integer requiredLevel, string moduleName) {
+    integer access = getAccessLevel(user);
+    
+    if (access < requiredLevel) {
+        string levelName = "Public";
+        if (requiredLevel == ACCESS_WEARER) levelName = "Wearer";
+        else if (requiredLevel == ACCESS_TRUSTED) levelName = "Trusted User";
+        else if (requiredLevel == ACCESS_ADMIN) levelName = "Administrator";
+        
+        llInstantMessage(user, "Access denied. " + levelName + " permissions required for " + moduleName + ".");
+        return FALSE;
+    }
+    
+    if (!gConfigReceived) {
+        llInstantMessage(user, "Module permissions not synchronized. Please try again in a moment.");
+        return FALSE;
+    }
+    
+    return TRUE;
+}
+
 // --- SENSORY EXPERIENCE LISTS ---
+
 list gEroticEmotes = [
     "shivers with pleasure as sensors detect arousal stimulation",
     "breathing becomes shallow as pleasure protocols engage",
@@ -88,6 +147,7 @@ list gEroticAnimations = ["pleasure_1", "pleasure_2", "arousal_1", "stimulation_
 list gPainAnimations = ["pain_1", "shock_1", "damage_1", "writhe_1"];
 
 // --- HELPER FUNCTIONS ---
+
 sendEmote(string emote, integer chatType) {
     string fullEmote = "/me " + emote;
     
@@ -96,7 +156,7 @@ sendEmote(string emote, integer chatType) {
     } else if (chatType == 1) { // Owner only
         llInstantMessage(llGetOwner(), fullEmote);
     } else if (chatType == 2) { // Wearer only  
-        llInstantMessage(gWearer, "// " + emote + " //");
+        llInstantMessage(wearer, "// " + emote + " //");
     }
 }
 
@@ -143,7 +203,7 @@ broadcastToLovense(string command, integer intensity) {
 
 sendToINM(string command, integer intensity) {
     // It's Not Mine system commands
-    string inmCmd = command + "|" + (string)intensity + "|" + (string)gWearer;
+    string inmCmd = command + "|" + (string)intensity + "|" + (string)wearer;
     llSay(INM_CHANNEL, inmCmd);
     llWhisper(INM_CHANNEL, inmCmd);
     
@@ -154,7 +214,7 @@ sendToINM(string command, integer intensity) {
 
 sendToXcite(string command, integer intensity) {
     // Xcite! system commands
-    string xciteCmd = (string)gWearer + ":" + command + ":" + (string)intensity;
+    string xciteCmd = (string)wearer + ":" + command + ":" + (string)intensity;
     llSay(XCITE_CHANNEL, xciteCmd);
     
     // Alternative Xcite format
@@ -163,7 +223,7 @@ sendToXcite(string command, integer intensity) {
 
 sendToSensations(string command, integer intensity) {
     // Sensations system commands
-    string sensCmd = "SENS:" + command + ":" + (string)intensity + ":" + (string)gWearer;
+    string sensCmd = "SENS:" + command + ":" + (string)intensity + ":" + (string)wearer;
     llSay(SENSATIONS_CHANNEL, sensCmd);
     llWhisper(SENSATIONS_CHANNEL, sensCmd);
 }
@@ -182,116 +242,172 @@ sendToRLVRelay(string command, key target) {
     llSay(RLV_RELAY_CHANNEL, relayCmd);
 }
 
-openMainMenu(key admin_id) {
-    string dialog = "\n[ SENSORY EXPERIENCE PROTOCOLS ]\n[---------------------]\n";
+// --- MENU FUNCTIONS ---
+
+openMainMenu(key user) {
+    // Check permissions first
+    if (!checkModuleAccess(user, ACCESS_ADMIN, "Sensory Module")) {
+        return;
+    }
+    
+    integer access = getAccessLevel(user);
+    
+    string dialog = "\n[ SENSORY EXPERIENCE PROTOCOLS ]\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
     dialog += "Battery: " + (string)((integer)gBatteryLevel) + "%\n";
     dialog += "Status: ";
     if (gSensoryActive) dialog += "ACTIVE";
     else dialog += "INACTIVE";
     
+    dialog += "\nAccess Level: ";
+    if (access >= ACCESS_ADMIN) {
+        dialog += "ADMINISTRATOR\n";
+    } else if (access >= ACCESS_TRUSTED) {
+        dialog += "TRUSTED USER\n";
+    } else {
+        dialog += "WEARER\n";
+    }
+    
+    dialog += "Config Status: ";
+    if (gConfigReceived) {
+        dialog += "SYNCHRONIZED";
+    } else {
+        dialog += "WAITING";
+    }
+    dialog += "\n\n⚠️ ADULT CONTENT - ADMIN ONLY ⚠️";
+    
     list buttons = ["EROTIC", "PAIN", "Stop All"];
     if (gSensoryActive) buttons += ["[DISABLE]"];
     else buttons += ["[ENABLE]"];
-    buttons += ["Devices", "-Main-"];
+    buttons += ["Devices", "Close"];
 
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
-openEroticMenu(key admin_id) {
-    string dialog = "\n[ EROTIC SENSORY PROTOCOLS ]\n[---------------------]\n";
+openEroticMenu(key user) {
+    // Check permissions
+    if (!checkModuleAccess(user, ACCESS_ADMIN, "Erotic Sensory")) {
+        return;
+    }
+    
+    string dialog = "\n[ EROTIC SENSORY PROTOCOLS ]\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
     dialog += "Connected: Lovense(" + (string)llGetListLength(gConnectedDevices) + ") ";
     dialog += "INM(" + (string)llGetListLength(gConnectedINM) + ") ";
-    dialog += "Xcite(" + (string)llGetListLength(gConnectedXcite) + ")\n";
+    dialog += "Xcite(" + (string)llGetListLength(gConnectedXcite) + ")\n\n";
+    dialog += "⚠️ EXPLICIT ADULT CONTENT ⚠️";
     
     list buttons = ["Stimulate", "Climax", "Tease", "Edge", "Penetrate", "Oral"];
     buttons += ["Low Buzz", "Med Buzz", "High Buzz", "All Devices", "INM Only", "Xcite Only"];
-    buttons += ["Stop Erotic", "<-- Back"];
+    buttons += ["Stop Erotic", "-Back-"];
 
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
-openPainMenu(key admin_id) {
-    string dialog = "\n[ PAIN SENSORY PROTOCOLS ]\n[---------------------]\n";
-    dialog += "Simulate damage and pain responses\n";
+openPainMenu(key user) {
+    // Check permissions
+    if (!checkModuleAccess(user, ACCESS_ADMIN, "Pain Sensory")) {
+        return;
+    }
+    
+    string dialog = "\n[ PAIN SENSORY PROTOCOLS ]\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    dialog += "Simulate damage and pain responses\n\n";
+    dialog += "⚠️ INTENSE EXPERIENCES - ADMIN ONLY ⚠️";
     
     list buttons = ["Shock", "Poke/Spike", "Burn", "Impact", "Torture", "Agony"];
-    buttons += ["Stop Pain", "<-- Back"];
+    buttons += ["Stop Pain", "-Back-"];
 
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
-openDevicesMenu(key admin_id) {
-    string dialog = "\n[ CONNECTED ADULT DEVICES ]\n[---------------------]\n";
+openDevicesMenu(key user) {
+    // Check permissions
+    if (!checkModuleAccess(user, ACCESS_ADMIN, "Device Management")) {
+        return;
+    }
+    
+    string dialog = "\n[ CONNECTED ADULT DEVICES ]\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
     dialog += "Lovense: " + (string)llGetListLength(gConnectedDevices) + " devices\n";
     dialog += "INM Genitals: " + (string)llGetListLength(gConnectedINM) + " detected\n";
     dialog += "Xcite: " + (string)llGetListLength(gConnectedXcite) + " devices\n";
-    dialog += "Sensations: " + (string)llGetListLength(gConnectedSensations) + " devices\n";
+    dialog += "Sensations: " + (string)llGetListLength(gConnectedSensations) + " devices";
     
     list buttons = ["Scan All", "Test Lovense", "Test INM", "Test Xcite", "Test Sens"];
-    buttons += ["Connect All", "Sync Devices", "<-- Back"];
+    buttons += ["Connect All", "Sync Devices", "-Back-"];
 
-    gListenHandle = llListen(gMenuChannel, "", admin_id, "");
-    llDialog(admin_id, dialog, buttons, gMenuChannel);
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
-processEroticCommand(string command, key admin_id) {
+// --- COMMAND PROCESSORS ---
+
+processEroticCommand(string command, key user) {
     if (!gSensoryActive) {
-        llInstantMessage(admin_id, "Sensory protocols are disabled.");
+        llInstantMessage(user, "Sensory protocols are disabled.");
+        return;
+    }
+    
+    // Additional permission check for safety
+    if (getAccessLevel(user) < ACCESS_ADMIN) {
+        llInstantMessage(user, "Access denied. Administrator permissions required for adult content.");
         return;
     }
     
     gEroticMode = TRUE;
     
     if (command == "Stimulate") {
+        broadcastToAllDevices("STIMULATE", 50);
         sendEmote(llList2String(gEroticEmotes, (integer)llFrand(llGetListLength(gEroticEmotes))), 0);
         playRandomAnimation(gEroticAnimations);
-        broadcastToAllDevices("VIBRATE", 40);
-        llInstantMessage(gWearer, "// Pleasure stimulation protocols active //");
+        llInstantMessage(wearer, "// PLEASURE PROTOCOLS ACTIVE //");
     }
     else if (command == "Climax") {
-        sendEmote("systems overload with intense pleasure as climax protocols engage", 0);
+        broadcastToAllDevices("CLIMAX", 100);
+        sendEmote("systems overloading with intense pleasure feedback", 0);
         playRandomAnimation(gEroticAnimations);
-        broadcastToAllDevices("CLIMAX", 95);
-        sendToINM("ORGASM", 100);
-        llInstantMessage(gWearer, "// CLIMAX SEQUENCE INITIATED //");
+        llInstantMessage(wearer, "// CLIMAX SEQUENCE INITIATED //");
     }
     else if (command == "Tease") {
-        sendEmote("pleasure sensors detect teasing stimulation... arousal increasing", 0);
-        broadcastToAllDevices("PULSE", 25);
-        llInstantMessage(gWearer, "// Teasing protocols engaged //");
+        broadcastToAllDevices("TEASE", 30);
+        sendEmote("sensors detect teasing stimulation patterns", 0);
+        llInstantMessage(wearer, "// TEASE PROTOCOLS ACTIVE //");
     }
     else if (command == "Edge") {
-        sendEmote("approaching climax threshold... systems maintaining edge state", 0);
         broadcastToAllDevices("EDGE", 80);
-        sendToINM("EDGE", 85);
-        llInstantMessage(gWearer, "// EDGE PROTOCOL ACTIVE - CLIMAX DENIED //");
+        sendEmote("pleasure systems approaching critical threshold", 0);
+        llInstantMessage(wearer, "// EDGE PROTOCOLS - APPROACHING LIMIT //");
     }
     else if (command == "Penetrate") {
-        sendEmote("penetration sensors active... depth and pressure monitored", 0);
-        sendToINM("PENETRATE", 60);
-        sendToXcite("PENETRATE", 60);
-        llInstantMessage(gWearer, "// Penetration simulation active //");
+        broadcastToAllDevices("PENETRATE", 70);
+        sendEmote("penetration sensors registering deep stimulation", 0);
+        playRandomAnimation(gEroticAnimations);
+        llInstantMessage(wearer, "// PENETRATION PROTOCOLS ACTIVE //");
     }
     else if (command == "Oral") {
-        sendEmote("oral stimulation protocols detected... pleasure receptors responding", 0);
-        sendToINM("ORAL", 50);
-        sendToXcite("ORAL", 50);
-        llInstantMessage(gWearer, "// Oral stimulation protocols active //");
+        broadcastToAllDevices("ORAL", 60);
+        sendEmote("oral stimulation protocols engaging", 0);
+        llInstantMessage(wearer, "// ORAL STIMULATION DETECTED //");
     }
     else if (command == "Low Buzz") {
         broadcastToAllDevices("VIBRATE", 25);
-        sendEmote("low-intensity pleasure signals detected", 2);
+        sendEmote("gentle vibration patterns detected", 2);
     }
     else if (command == "Med Buzz") {
-        broadcastToAllDevices("VIBRATE", 50);
-        sendEmote("medium-intensity pleasure protocols active", 2);
+        broadcastToAllDevices("VIBRATE", 60);
+        sendEmote("moderate pleasure vibrations active", 0);
     }
     else if (command == "High Buzz") {
         broadcastToAllDevices("VIBRATE", 90);
@@ -320,9 +436,15 @@ processEroticCommand(string command, key admin_id) {
     }
 }
 
-processPainCommand(string command, key admin_id) {
+processPainCommand(string command, key user) {
     if (!gSensoryActive) {
-        llInstantMessage(admin_id, "Sensory protocols are disabled.");
+        llInstantMessage(user, "Sensory protocols are disabled.");
+        return;
+    }
+    
+    // Additional permission check for safety
+    if (getAccessLevel(user) < ACCESS_ADMIN) {
+        llInstantMessage(user, "Access denied. Administrator permissions required for pain protocols.");
         return;
     }
     
@@ -333,38 +455,38 @@ processPainCommand(string command, key admin_id) {
         sendEmote(llList2String(gShockEmotes, (integer)llFrand(llGetListLength(gShockEmotes))), 0);
         playRandomAnimation(gPainAnimations);
         applyPainRestrictions();
-        llInstantMessage(gWearer, "// ELECTRICAL SHOCK DETECTED - PROTECTIVE PROTOCOLS ACTIVE //");
+        llInstantMessage(wearer, "// ELECTRICAL SHOCK DETECTED - PROTECTIVE PROTOCOLS ACTIVE //");
     }
     else if (command == "Poke/Spike") {
         gPokeActive = TRUE;
         sendEmote(llList2String(gPokeEmotes, (integer)llFrand(llGetListLength(gPokeEmotes))), 0);
         playRandomAnimation(gPainAnimations);
         applyPainRestrictions();
-        llInstantMessage(gWearer, "// PUNCTURE DAMAGE DETECTED - EMERGENCY PROTOCOLS ACTIVE //");
+        llInstantMessage(wearer, "// PUNCTURE DAMAGE DETECTED - EMERGENCY PROTOCOLS ACTIVE //");
     }
     else if (command == "Burn") {
         sendEmote("thermal damage detected... heat sensors registering dangerous levels", 0);
         playRandomAnimation(gPainAnimations);
         applyPainRestrictions();
-        llInstantMessage(gWearer, "// THERMAL DAMAGE PROTOCOLS ACTIVE //");
+        llInstantMessage(wearer, "// THERMAL DAMAGE PROTOCOLS ACTIVE //");
     }
     else if (command == "Impact") {
         sendEmote("impact sensors register significant kinetic damage", 0);
         playRandomAnimation(gPainAnimations);
         applyPainRestrictions();
-        llInstantMessage(gWearer, "// IMPACT DAMAGE DETECTED //");
+        llInstantMessage(wearer, "// IMPACT DAMAGE DETECTED //");
     }
     else if (command == "Torture") {
         sendEmote("multiple pain receptors firing... torture protocols detected", 0);
         playRandomAnimation(gPainAnimations);
         applyPainRestrictions();
-        llInstantMessage(gWearer, "// TORTURE SEQUENCE ACTIVE - SURVIVAL MODE ENGAGED //");
+        llInstantMessage(wearer, "// TORTURE SEQUENCE ACTIVE - SURVIVAL MODE ENGAGED //");
     }
     else if (command == "Agony") {
         sendEmote("pain threshold exceeded... agony protocols overwhelming all systems", 0);
         playRandomAnimation(gPainAnimations);
         applyPainRestrictions();
-        llInstantMessage(gWearer, "// MAXIMUM PAIN THRESHOLD EXCEEDED //");
+        llInstantMessage(wearer, "// MAXIMUM PAIN THRESHOLD EXCEEDED //");
     }
     else if (command == "Stop Pain") {
         gPainActive = FALSE;
@@ -374,9 +496,16 @@ processPainCommand(string command, key admin_id) {
 }
 
 // --- MAIN SCRIPT LOGIC ---
+
 default {
     state_entry() {
-        gWearer = llGetOwner();
+        wearer = llGetOwner();
+        gConfigReceived = FALSE;
+        
+        // Initialize with owner as admin (backup measure)
+        gAdministrators = [wearer];
+        gTrustedUsers = [];
+        
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
         
         // Listen for all adult device system responses
@@ -388,6 +517,8 @@ default {
         llListen(AVS_CHANNEL, "", NULL_KEY, "");
         
         llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Sensory", NULL_KEY);
+        
+        llOwnerSay("Sensory module v1.2 initialized with adult device integration...");
     }
 
     link_message(integer sender, integer num, string msg, key id) {
@@ -395,17 +526,42 @@ default {
             gBatteryLevel = (float)msg;
             // Reduce sensory intensity at low battery
             if (gBatteryLevel <= 15.0 && (gEroticMode || gPainActive)) {
-                llInstantMessage(gWearer, "// Low power affecting sensory protocols //");
+                llInstantMessage(wearer, "// Low power affecting sensory protocols //");
             }
         } 
         else if (num == UPDATE_CONFIG) {
+            // Receive configuration from master kernel
             list parts = llParseString2List(msg, ["|"], []);
-            gAdministrators = llCSV2List(llList2String(parts, 0));
-            gTrustedUsers = llCSV2List(llList2String(parts, 1));
+            if (llGetListLength(parts) >= 2) {
+                string adminCsv = llList2String(parts, 0);
+                string trustedCsv = llList2String(parts, 1);
+                
+                // Update local lists from master kernel
+                if (adminCsv != "") {
+                    gAdministrators = llCSV2List(adminCsv);
+                } else {
+                    gAdministrators = [llGetOwner()]; // Ensure owner is always admin
+                }
+                
+                if (trustedCsv != "") {
+                    gTrustedUsers = llCSV2List(trustedCsv);
+                } else {
+                    gTrustedUsers = [];
+                }
+                
+                gConfigReceived = TRUE;
+                llOwnerSay("Sensory Module permissions updated from master kernel.");
+                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
+                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
+            }
         } 
         else if (num == OPEN_MY_MENU) {
-            if (llGetLinkName(sender) == "main_module") {
-                openMainMenu((key)msg);
+            key user = (key)msg;
+            
+            // Check permissions using new system - require admin for adult content
+            if (checkModuleAccess(user, ACCESS_ADMIN, "Sensory Module")) {
+                gAdministrator = user;
+                openMainMenu(user);
             }
         }
         else if (num == POWER_STATE_CHANGE) {
@@ -427,103 +583,172 @@ default {
         if (chan == gMenuChannel) {
             llSetTimerEvent(0.0);
             llListenRemove(gListenHandle);
+            
+            // Always check permissions in listen events
+            integer access = getAccessLevel(id);
 
-            if (msg == "-Main-") { return; }
-            else if (msg == "<-- Back") { openMainMenu(id); }
-            else if (msg == "EROTIC") { openEroticMenu(id); }
-            else if (msg == "PAIN") { openPainMenu(id); }
-            else if (msg == "Devices") { openDevicesMenu(id); }
-            else if (msg == "Stop All") {
-                gEroticMode = FALSE;
-                gPainActive = FALSE;
-                clearPainRestrictions();
-                stopCurrentAnimation();
-                broadcastToAllDevices("STOP", 0);
-                sendEmote("all sensory protocols deactivated", 2);
+            if (msg == "Close") {
+                llInstantMessage(id, "Sensory module menu closed.");
+                return;
+            }
+            else if (msg == "-Back-") {
                 openMainMenu(id);
+                return;
+            }
+            else if (msg == "EROTIC") {
+                if (access >= ACCESS_ADMIN) {
+                    openEroticMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required for adult content.");
+                }
+            }
+            else if (msg == "PAIN") {
+                if (access >= ACCESS_ADMIN) {
+                    openPainMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required for pain protocols.");
+                }
+            }
+            else if (msg == "Devices") {
+                if (access >= ACCESS_ADMIN) {
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required for device management.");
+                }
+            }
+            else if (msg == "Stop All") {
+                if (access >= ACCESS_ADMIN) {
+                    gEroticMode = FALSE;
+                    gPainActive = FALSE;
+                    clearPainRestrictions();
+                    stopCurrentAnimation();
+                    broadcastToAllDevices("STOP", 0);
+                    sendEmote("all sensory protocols deactivated", 2);
+                    openMainMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (llSubStringIndex(msg, "[DISABLE]") != -1) {
-                gSensoryActive = FALSE;
-                llInstantMessage(gWearer, "// Sensory experience protocols disabled //");
-                openMainMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    gSensoryActive = FALSE;
+                    llInstantMessage(wearer, "// Sensory experience protocols disabled //");
+                    openMainMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (llSubStringIndex(msg, "[ENABLE]") != -1) {
-                gSensoryActive = TRUE;
-                llInstantMessage(gWearer, "// Sensory experience protocols enabled //");
-                openMainMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    gSensoryActive = TRUE;
+                    llInstantMessage(wearer, "// Sensory experience protocols enabled //");
+                    openMainMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             // Handle erotic commands
             else if (llListFindList(["Stimulate", "Climax", "Tease", "Edge", "Penetrate", "Oral", "Low Buzz", "Med Buzz", "High Buzz", "All Devices", "INM Only", "Xcite Only", "Stop Erotic"], [msg]) != -1) {
-                processEroticCommand(msg, id);
-                openEroticMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    processEroticCommand(msg, id);
+                    openEroticMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required for adult content.");
+                }
             }
             // Handle pain commands  
             else if (llListFindList(["Shock", "Poke/Spike", "Burn", "Impact", "Torture", "Agony", "Stop Pain"], [msg]) != -1) {
-                processPainCommand(msg, id);
-                openPainMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    processPainCommand(msg, id);
+                    openPainMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required for pain protocols.");
+                }
             }
             // Handle device commands
             else if (msg == "Scan All") {
-                // Scan for all device types
-                llSay(LOVENSE_CHANNEL, "LVS:DEVICE_SCAN");
-                llSay(INM_CHANNEL, "SCAN_GENITALS");
-                llSay(XCITE_CHANNEL, "DEVICE_SCAN");
-                llSay(SENSATIONS_CHANNEL, "SENS:SCAN");
-                llSensor("", NULL_KEY, PASSIVE, 20.0, PI);
-                llInstantMessage(id, "Scanning for all adult device types...");
-                openDevicesMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    // Scan for all device types
+                    llSay(LOVENSE_CHANNEL, "LVS:DEVICE_SCAN");
+                    llSay(INM_CHANNEL, "SCAN_GENITALS");
+                    llSay(XCITE_CHANNEL, "DEVICE_SCAN");
+                    llSay(SENSATIONS_CHANNEL, "SENS:SCAN");
+                    llSensor("", NULL_KEY, PASSIVE, 20.0, PI);
+                    llInstantMessage(id, "Scanning for all adult device types...");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (msg == "Test Lovense") {
-                broadcastToLovense("TEST", 50);
-                llInstantMessage(id, "Test signal sent to Lovense devices.");
-                openDevicesMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    broadcastToLovense("TEST", 50);
+                    llInstantMessage(id, "Test signal sent to Lovense devices.");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (msg == "Test INM") {
-                sendToINM("TEST", 50);
-                llInstantMessage(id, "Test signal sent to INM genitals.");
-                openDevicesMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    sendToINM("TEST", 50);
+                    llInstantMessage(id, "Test signal sent to INM genitals.");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (msg == "Test Xcite") {
-                sendToXcite("TEST", 50);
-                llInstantMessage(id, "Test signal sent to Xcite devices.");
-                openDevicesMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    sendToXcite("TEST", 50);
+                    llInstantMessage(id, "Test signal sent to Xcite devices.");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (msg == "Test Sens") {
-                sendToSensations("TEST", 50);
-                llInstantMessage(id, "Test signal sent to Sensations devices.");
-                openDevicesMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    sendToSensations("TEST", 50);
+                    llInstantMessage(id, "Test signal sent to Sensations devices.");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
             else if (msg == "Connect All") {
-                broadcastToAllDevices("CONNECT", 0);
-                llInstantMessage(id, "Connection request sent to all device types.");
-                openDevicesMenu(id);
+                if (access >= ACCESS_ADMIN) {
+                    broadcastToAllDevices("CONNECT", 0);
+                    llInstantMessage(id, "Connection request sent to all device types.");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
-            else {
-                openMainMenu(id);
+            else if (msg == "Sync Devices") {
+                if (access >= ACCESS_ADMIN) {
+                    broadcastToAllDevices("SYNC", 0);
+                    llInstantMessage(id, "Synchronization request sent to all devices.");
+                    openDevicesMenu(id);
+                } else {
+                    llInstantMessage(id, "Access denied. Administrator permissions required.");
+                }
             }
         }
-        // Handle adult device system responses
+        // Handle Lovense device responses
         else if (chan == LOVENSE_CHANNEL && llSubStringIndex(msg, "LVS:") == 0) {
             list parts = llParseString2List(msg, [":"], []);
             string command = llList2String(parts, 1);
             
-            if (command == "CONNECTED") {
+            if (command == "DEVICE_READY" || command == "CONNECTED") {
                 string device = llList2String(parts, 2);
                 if (llListFindList(gConnectedDevices, [device]) == -1) {
                     gConnectedDevices += [device];
-                    llInstantMessage(gWearer, "// Lovense device connected: " + device + " //");
-                }
-            }
-            else if (command == "DISCONNECTED") {
-                string device = llList2String(parts, 2);
-                integer idx = llListFindList(gConnectedDevices, [device]);
-                if (idx != -1) {
-                    gConnectedDevices = llDeleteSubList(gConnectedDevices, idx, idx);
-                    llInstantMessage(gWearer, "// Lovense device disconnected: " + device + " //");
+                    llInstantMessage(wearer, "// Lovense device connected: " + device + " //");
                 }
             }
         }
-        // Handle INM (It's Not Mine) responses
+        // Handle INM responses
         else if (chan == INM_CHANNEL) {
             list parts = llParseString2List(msg, ["|"], []);
             string command = llList2String(parts, 0);
@@ -532,7 +757,7 @@ default {
                 string device = llList2String(parts, 1);
                 if (llListFindList(gConnectedINM, [device]) == -1) {
                     gConnectedINM += [device];
-                    llInstantMessage(gWearer, "// INM genital system connected: " + device + " //");
+                    llInstantMessage(wearer, "// INM genital system connected: " + device + " //");
                 }
             }
             else if (command == "ORGASM_COMPLETE") {
@@ -545,7 +770,7 @@ default {
                 string deviceKey = (string)id;
                 if (llListFindList(gConnectedXcite, [deviceKey]) == -1) {
                     gConnectedXcite += [deviceKey];
-                    llInstantMessage(gWearer, "// Xcite device connected //");
+                    llInstantMessage(wearer, "// Xcite device connected //");
                 }
             }
         }
@@ -558,7 +783,7 @@ default {
                 string device = llList2String(parts, 2);
                 if (llListFindList(gConnectedSensations, [device]) == -1) {
                     gConnectedSensations += [device];
-                    llInstantMessage(gWearer, "// Sensations device connected: " + device + " //");
+                    llInstantMessage(wearer, "// Sensations device connected: " + device + " //");
                 }
             }
         }
@@ -576,7 +801,7 @@ default {
                 llSubStringIndex(llToLower(name), "furniture") != -1 ||
                 llSubStringIndex(llToLower(name), "toy") != -1) {
                 
-                llInstantMessage(gWearer, "// Compatible device detected: " + name + " //");
+                llInstantMessage(wearer, "// Compatible device detected: " + name + " //");
                 sendToRLVRelay("@sit:" + (string)detected + "=force", detected);
             }
         }
@@ -586,9 +811,24 @@ default {
         // Handle pain effect duration
         if (gTempRestrictions) {
             clearPainRestrictions();
-            llInstantMessage(gWearer, "// Pain effect duration expired - systems recovering //");
+            llInstantMessage(wearer, "// Pain effect duration expired - systems recovering //");
         } else {
             llListenRemove(gListenHandle);
         }
+        llSetTimerEvent(0.0);
     }
 }
+
+//-- IMPLEMENTATION NOTES v1.2:
+//-- 1. Added complete permissions system from template
+//-- 2. All menu functions now check permissions before execution
+//-- 3. Adult content requires administrator access for safety and consent
+//-- 4. Permissions are synchronized from master kernel via UPDATE_CONFIG
+//-- 5. Access levels displayed in menus for transparency
+//-- 6. Config status shows synchronization state
+//-- 7. Owner automatically has admin access as backup measure
+//-- 8. All adult sensory operations require administrator permissions
+//-- 9. Permission checks added to all listen event handlers
+//-- 10. Proper error messages when access is denied
+//-- 11. Adult content warnings displayed in menus
+//-- 12. Safety-focused design for sensitive functionality
