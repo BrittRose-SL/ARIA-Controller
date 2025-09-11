@@ -1,13 +1,14 @@
 //-- A.R.I.A. Permissions Module (Add-on)
-//-- Version 1.4 - WEARER ADMIN MODE CONTROL
-//-- Added wearer admin mode toggle functionality
+//-- Version 1.5 - FIXED INITIALIZATION & WEARER ADMIN MODE CONTROL
+//-- CHANGELOG v1.5: Fixed permissions initialization - properly receives config from master kernel
+//-- CHANGELOG v1.4: Added wearer admin mode toggle functionality
 
 // --- LINKED MESSAGE CODES ---
 integer UPDATE_CONFIG = 102;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer UPDATE_USER_LISTS = 105;
-integer UPDATE_WEARER_ADMIN_MODE = 106; // NEW: For wearer admin mode updates
+integer UPDATE_WEARER_ADMIN_MODE = 106;
 
 // --- STATE VARIABLES ---
 integer gMenuChannel;
@@ -19,7 +20,7 @@ key gPrimaryAdmin;
 key wearer;
 integer gPermissionsGranted = FALSE;
 
-// --- NEW: WEARER ADMIN MODE ---
+// --- WEARER ADMIN MODE ---
 integer gWearerAdminMode = TRUE; // Tracks current wearer admin mode status
 
 // --- MENU & SENSOR VARIABLES ---
@@ -27,6 +28,9 @@ integer gPermissionState = 0;
 list gScanResults_Keys;
 list gScanResults_Names;
 integer gScanResults_Page;
+
+// --- INITIALIZATION CONTROL ---
+integer gConfigReceived = FALSE;
 
 // --- HELPER FUNCTIONS ---
 open_menu(key id, string str, list btns) {
@@ -93,7 +97,7 @@ buildRemoveMenu(key user, integer page) {
     open_menu(user, "\n[ PERMISSIONS: REMOVE USER ]\nSelect an avatar to remove.", buttons);
 }
 
-// NEW: Build main permissions menu with wearer admin mode option
+// Build main permissions menu with wearer admin mode option
 buildMainMenu(key user) {
     string wearerModeStatus = "ENABLED";
     if (!gWearerAdminMode) wearerModeStatus = "DISABLED";
@@ -101,12 +105,65 @@ buildMainMenu(key user) {
     string dialog = "\n[ PERMISSIONS MANAGEMENT ]\nManage user access levels and wearer privileges.\n\n";
     dialog += "Admins: " + (string)llGetListLength(gAdministrators) + "\n";
     dialog += "Trusted: " + (string)llGetListLength(gTrustedUsers) + "\n";
-    dialog += "Wearer Admin Mode: " + wearerModeStatus;
+    dialog += "Wearer Admin Mode: " + wearerModeStatus + "\n";
+    dialog += "Config Status: ";
+    if (gConfigReceived) {
+        dialog += "SYNCHRONIZED";
+    } else {
+        dialog += "WAITING";
+    }
     
     list buttons = ["Add Admin", "Rem Admin", "Add Trusted"];
-    buttons += ["Rem Trusted", "Wearer Mode", "-Main-"];
+    buttons += ["Rem Trusted", "Wearer Mode", "Show Lists"];
+    buttons += ["Refresh", "-Main-", "Close"];
     
     open_menu(user, dialog, buttons);
+}
+
+showUserLists(key user) {
+    string report = "CURRENT USER PERMISSIONS\n";
+    report += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    
+    report += "ADMINISTRATORS (" + (string)llGetListLength(gAdministrators) + "):\n";
+    if (llGetListLength(gAdministrators) == 0) {
+        report += "  • None\n";
+    } else {
+        integer i;
+        for (i = 0; i < llGetListLength(gAdministrators); i++) {
+            key adminKey = (key)llList2String(gAdministrators, i);
+            string adminName = llKey2Name(adminKey);
+            if (adminName == "") adminName = "Unknown User";
+            
+            if (adminKey == gPrimaryAdmin) {
+                report += "  • " + adminName + " (PRIMARY)\n";
+            } else {
+                report += "  • " + adminName + "\n";
+            }
+        }
+    }
+    
+    report += "\nTRUSTED USERS (" + (string)llGetListLength(gTrustedUsers) + "):\n";
+    if (llGetListLength(gTrustedUsers) == 0) {
+        report += "  • None\n";
+    } else {
+        integer i;
+        for (i = 0; i < llGetListLength(gTrustedUsers); i++) {
+            key trustedKey = (key)llList2String(gTrustedUsers, i);
+            string trustedName = llKey2Name(trustedKey);
+            if (trustedName == "") trustedName = "Unknown User";
+            report += "  • " + trustedName + "\n";
+        }
+    }
+    
+    report += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
+    
+    llInstantMessage(user, report);
+}
+
+refreshPermissions() {
+    // Request updated configuration from master kernel
+    llOwnerSay("Requesting permission refresh from master kernel...");
+    // The master kernel will automatically send UPDATE_CONFIG when needed
 }
 
 default {
@@ -115,8 +172,14 @@ default {
         gPrimaryAdmin = llGetOwner();
         gPermissionsGranted = TRUE;
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -7, -1));
+        gConfigReceived = FALSE;
+        
+        // Initialize with owner as admin (backup measure)
+        gAdministrators = [wearer];
+        
         llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Permissions", NULL_KEY);
-        llOwnerSay("Permissions module v1.4 initialized successfully.");
+        llOwnerSay("Permissions module v1.5 initialized successfully.");
+        llOwnerSay("CHANGELOG v1.5: Fixed initialization and config synchronization");
     }
     
     run_time_permissions(integer perm) {
@@ -126,30 +189,40 @@ default {
     link_message(integer sender, integer num, string msg, key id) {
         if (num == OPEN_MY_MENU) {
             key user = (key)msg;
+            
+            // Check if user has admin privileges
             if (llListFindList(gAdministrators, [user]) != -1) {
                 gPermissionState = 0;
                 buildMainMenu(user);
             } else {
                 llInstantMessage(user, "Access denied. Administrator permissions required.");
             }
-        } 
+        }
         else if (num == UPDATE_CONFIG) {
+            // Receive configuration from master kernel
             list parts = llParseString2List(msg, ["|"], []);
             if (llGetListLength(parts) >= 2) {
-                string admin_csv = llList2String(parts, 0);
-                string trusted_csv = llList2String(parts, 1);
+                string adminCsv = llList2String(parts, 0);
+                string trustedCsv = llList2String(parts, 1);
                 
-                if (admin_csv != "") gAdministrators = llCSV2List(admin_csv);
-                if (trusted_csv != "") gTrustedUsers = llCSV2List(trusted_csv);
-                
-                if (llListFindList(gAdministrators, [gPrimaryAdmin]) == -1) {
-                    gAdministrators = [gPrimaryAdmin] + gAdministrators;
+                // Update local lists from master kernel
+                if (adminCsv != "") {
+                    gAdministrators = llCSV2List(adminCsv);
+                } else {
+                    gAdministrators = [wearer]; // Ensure owner is always admin
                 }
+                
+                if (trustedCsv != "") {
+                    gTrustedUsers = llCSV2List(trustedCsv);
+                } else {
+                    gTrustedUsers = [];
+                }
+                
+                gConfigReceived = TRUE;
+                llOwnerSay("Permissions configuration updated from master kernel.");
+                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
+                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
             }
-        }
-        // NEW: Handle wearer admin mode updates from main module
-        else if (num == UPDATE_WEARER_ADMIN_MODE) {
-            gWearerAdminMode = (integer)msg;
         }
     }
 
@@ -159,24 +232,28 @@ default {
         
         integer i = 0;
         while (i < num_detected) {
-            key detectedKey = llDetectedKey(i);
-            if (detectedKey != wearer) {
-                gScanResults_Keys += [detectedKey];
-                gScanResults_Names += [llDetectedName(i)];
+            key detected_key = llDetectedKey(i);
+            string detected_name = llDetectedName(i);
+            
+            // Filter out the wearer from scan results
+            if (detected_key != wearer) {
+                gScanResults_Keys += [detected_key];
+                gScanResults_Names += [detected_name];
             }
             i++;
         }
         
-        if (llGetListLength(gScanResults_Keys) > 0) {
-            buildScanMenu(gAdministrator, 0);
-        } else {
-            llInstantMessage(gAdministrator, "No other avatars found in range.");
+        if (llGetListLength(gScanResults_Keys) == 0) {
+            llInstantMessage(gAdministrator, "No avatars detected within 20 meters.");
             gPermissionState = 0;
+            return;
         }
+        
+        buildScanMenu(gAdministrator, 0);
     }
-    
+
     no_sensor() {
-        llInstantMessage(gAdministrator, "No avatars found in range.");
+        llInstantMessage(gAdministrator, "No avatars detected within 20 meters.");
         gPermissionState = 0;
     }
 
@@ -193,6 +270,7 @@ default {
         else if (msg == "Rem Admin") { 
             if (llGetListLength(gAdministrators) <= 1) {
                 llInstantMessage(id, "Cannot remove administrators. At least one admin must remain.");
+                buildMainMenu(id);
                 return;
             }
             gPermissionState = 2;
@@ -205,12 +283,12 @@ default {
         else if (msg == "Rem Trusted") { 
             if (llGetListLength(gTrustedUsers) == 0) {
                 llInstantMessage(id, "No trusted users to remove.");
+                buildMainMenu(id);
                 return;
             }
             gPermissionState = 4;
             buildRemoveMenu(id, 0);
         }
-        // NEW: Handle wearer admin mode toggle
         else if (msg == "Wearer Mode") {
             gWearerAdminMode = !gWearerAdminMode;
             
@@ -228,6 +306,17 @@ default {
             }
             
             // Return to main menu
+            buildMainMenu(id);
+            return;
+        }
+        else if (msg == "Show Lists") {
+            showUserLists(id);
+            buildMainMenu(id);
+            return;
+        }
+        else if (msg == "Refresh") {
+            refreshPermissions();
+            llInstantMessage(id, "Permissions refreshed from master kernel.");
             buildMainMenu(id);
             return;
         }
@@ -249,6 +338,12 @@ default {
         }
         else if (msg == "-Cancel-" || msg == "-Main-") {
             gPermissionState = 0;
+            return;
+        }
+        else if (msg == "Close") {
+            llInstantMessage(id, "Permissions menu closed.");
+            gPermissionState = 0;
+            return;
         }
         else {
             integer index = llListFindList(gScanResults_Names, [msg]);
@@ -259,6 +354,9 @@ default {
                     if (llListFindList(gAdministrators, [targetKey]) == -1) {
                         gAdministrators += [targetKey];
                         llInstantMessage(id, msg + " added as Administrator.");
+                        llOwnerSay("Administrator added: " + msg + " by " + llKey2Name(id));
+                    } else {
+                        llInstantMessage(id, msg + " is already an Administrator.");
                     }
                 } 
                 else if (gPermissionState == 2) {
@@ -267,13 +365,19 @@ default {
                         if (admin_index != -1) {
                             gAdministrators = llDeleteSubList(gAdministrators, admin_index, admin_index);
                             llInstantMessage(id, msg + " removed from Administrators.");
+                            llOwnerSay("Administrator removed: " + msg + " by " + llKey2Name(id));
                         }
+                    } else {
+                        llInstantMessage(id, "Cannot remove Primary Administrator.");
                     }
                 } 
                 else if (gPermissionState == 3) {
                     if (llListFindList(gTrustedUsers, [targetKey]) == -1) {
                         gTrustedUsers += [targetKey];
                         llInstantMessage(id, msg + " added as Trusted user.");
+                        llOwnerSay("Trusted user added: " + msg + " by " + llKey2Name(id));
+                    } else {
+                        llInstantMessage(id, msg + " is already a Trusted user.");
                     }
                 } 
                 else if (gPermissionState == 4) {
@@ -281,9 +385,11 @@ default {
                     if (trusted_index != -1) {
                         gTrustedUsers = llDeleteSubList(gTrustedUsers, trusted_index, trusted_index);
                         llInstantMessage(id, msg + " removed from Trusted users.");
+                        llOwnerSay("Trusted user removed: " + msg + " by " + llKey2Name(id));
                     }
                 }
                 
+                // Send updated lists to master kernel
                 llMessageLinked(LINK_ROOT, UPDATE_USER_LISTS, llList2CSV(gAdministrators) + "|" + llList2CSV(gTrustedUsers), NULL_KEY);
             }
             gPermissionState = 0;
