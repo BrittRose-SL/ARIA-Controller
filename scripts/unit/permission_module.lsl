@@ -1,26 +1,42 @@
 //-- A.R.I.A. Permissions Module (Add-on)
-//-- Version 2.0 - SIMPLIFIED ACCESS CONTROL
-//-- September 11, 2025 - Complete rewrite with simplified permission hierarchy
-//-- CHANGES v2.0: Simplified to Primary Admin > Admin > Trusted > Wearer hierarchy,
-//                  removed complex wearer admin mode, cleaner access control
+//-- Version 3.0 - OPENCOLLAR STYLE AUTH SYSTEM
+//-- September 12, 2025 - Complete rewrite using OpenCollar auth architecture
+//-- CHANGES v3.0: 
+//--   - Implemented OpenCollar-style CalcAuth() function
+//--   - Added AUTH_REQUEST/AUTH_REPLY protocol
+//--   - Replaced old permission lists with g_lOwner, g_lTrust, g_lBlock
+//--   - Added group and public access support
+//--   - Implemented range limiting
+//--   - Asynchronous permission checking system
 
 // --- LINKED MESSAGE CODES ---
-integer UPDATE_CONFIG = 102;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
-integer UPDATE_USER_LISTS = 105;
+integer AUTH_REQUEST = 600;
+integer AUTH_REPLY = 601;
+
+// --- OPENCOLLAR STYLE AUTH CONSTANTS ---
+integer CMD_OWNER = 500;
+integer CMD_TRUSTED = 501;
+integer CMD_GROUP = 502;
+integer CMD_WEARER = 503;
+integer CMD_EVERYONE = 504;
+integer CMD_BLOCKED = 598;
+integer CMD_NOACCESS = 599;
 
 // --- STATE VARIABLES ---
 integer gMenuChannel;
 integer gListenHandle;
 key gCurrentUser;
-key gPrimaryAdmin;
-key wearer;
+key g_kWearer;
 
-// --- SIMPLIFIED USER MANAGEMENT ---
-list gAdministrators;       // Regular Admins
-list gTrustedUsers;         // Trusted Users
-integer gWearerAccess = TRUE; // TRUE = wearer has access, FALSE = wearer blocked
+// --- OPENCOLLAR STYLE USER LISTS ---
+list g_lOwner;              // Owner list (replaces gPrimaryAdmin + gAdministrators)
+list g_lTrust;              // Trusted users (replaces gTrustedUsers)
+list g_lBlock;              // Blocked users (new)
+key g_kGroup = NULL_KEY;    // Group access key
+integer g_iPublic = FALSE;  // Public access flag
+integer g_iLimitRange = TRUE; // Range limiting flag
 
 // --- MENU & SENSOR VARIABLES ---
 integer gPermissionState = 0;
@@ -29,467 +45,375 @@ list gScanResults_Names;
 integer gScanResults_Page;
 
 // --- PERMISSION STATES ---
-// 0 = none, 1 = add admin, 2 = remove admin, 3 = add trusted, 4 = remove trusted
+// 0 = none, 1 = add owner, 2 = remove owner, 3 = add trusted, 4 = remove trusted
+// 5 = add block, 6 = remove block
 
-// --- ACCESS LEVELS (must match master kernel) ---
-integer ACCESS_PRIMARY_ADMIN = 5;
-integer ACCESS_ADMIN = 4;
-integer ACCESS_TRUSTED = 3;
-integer ACCESS_WEARER = 2;
-integer ACCESS_DENIED = 1;
+// --- OPENCOLLAR AUTH SYSTEM CORE FUNCTIONS ---
 
-// --- SIMPLIFIED ACCESS CONTROL ---
-integer getAccessLevel(key id) {
-    if (id == gPrimaryAdmin) return ACCESS_PRIMARY_ADMIN;
-    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
-    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
-    if (id == wearer && gWearerAccess) return ACCESS_WEARER;
-    return ACCESS_DENIED;
+// Main authorization calculation function - replaces all getAccessLevel functions
+integer CalcAuth(key kID) {
+    string sID = (string)kID;
+    
+    // Special case: If no owners exist and wearer is requesting access (and not blocked)
+    if(llGetListLength(g_lOwner) == 0 && kID == g_kWearer && 
+       llListFindList(g_lBlock, [sID]) == -1) {
+        return CMD_OWNER;
+    }
+    
+    // Standard hierarchy check
+    if(llListFindList(g_lBlock, [sID]) != -1) return CMD_BLOCKED;
+    if(llListFindList(g_lOwner, [sID]) != -1) return CMD_OWNER;
+    if(llListFindList(g_lTrust, [sID]) != -1) return CMD_TRUSTED;
+    if(kID == g_kWearer) return CMD_WEARER;
+    
+    // Group and public access only apply to nearby avatars/objects
+    if(in_range(kID)) {
+        if(g_kGroup != NULL_KEY && llSameGroup(kID)) return CMD_GROUP;
+        if(g_iPublic) return CMD_EVERYONE;
+    }
+    
+    return CMD_NOACCESS;
 }
 
-// Check if someone can access this permissions module
-integer canAccessPermissions(key id) {
-    integer access = getAccessLevel(id);
-    // Only Primary Admin, Admins, and Wearer can access permissions
-    return (access >= ACCESS_ADMIN || (id == wearer && gWearerAccess));
+// Range checking function
+integer in_range(key kID) {
+    if(!g_iLimitRange) return TRUE;
+    if(kID == g_kWearer) return TRUE;
+    vector pos = llList2Vector(llGetObjectDetails(kID, [OBJECT_POS]), 0);
+    return llVecDist(llGetPos(), pos) <= 20.0;
+}
+
+// Convert auth level to readable string
+string Auth2Str(integer iAuth) {
+    if(iAuth == CMD_OWNER) return "Owner";
+    else if(iAuth == CMD_TRUSTED) return "Trusted";
+    else if(iAuth == CMD_GROUP) return "Group";
+    else if(iAuth == CMD_WEARER) return "Wearer";
+    else if(iAuth == CMD_EVERYONE) return "Public";
+    else if(iAuth == CMD_BLOCKED) return "Blocked";
+    else if(iAuth == CMD_NOACCESS) return "No Access";
+    else return "Unknown = " + (string)iAuth;
 }
 
 // --- HELPER FUNCTIONS ---
 open_menu(key id, string str, list btns) {
     llListenRemove(gListenHandle);
+    gMenuChannel = (integer)("0x" + llGetSubString((string)id, -7, -1));
     gListenHandle = llListen(gMenuChannel, "", id, "");
     llDialog(id, str, btns, gMenuChannel);
     llSetTimerEvent(30.0);
 }
 
-// Build main permissions menu
-buildMainMenu(key user) {
-    integer userAccess = getAccessLevel(user);
-    string accessTitle = "UNKNOWN";
+// Add unique person to list (prevents duplicates)
+list AddUniquePerson(list lList, key kID) {
+    if(llListFindList(lList, [kID]) == -1) {
+        lList += [kID];
+    }
+    return lList;
+}
+
+// Remove person from list
+list RemovePerson(list lList, key kID) {
+    integer idx = llListFindList(lList, [kID]);
+    if(idx != -1) {
+        lList = llDeleteSubList(lList, idx, idx);
+    }
+    return lList;
+}
+
+// --- PERMISSION MANAGEMENT FUNCTIONS ---
+
+// Main permission menu
+openPermissionMenu(key user) {
+    integer auth = CalcAuth(user);
     
-    if (userAccess == ACCESS_PRIMARY_ADMIN) accessTitle = "PRIMARY ADMIN";
-    else if (userAccess == ACCESS_ADMIN) accessTitle = "ADMINISTRATOR";
-    else if (userAccess == ACCESS_WEARER) accessTitle = "WEARER";
+    if(auth < CMD_WEARER) {
+        llInstantMessage(user, "Access denied. Insufficient permissions for Permission module.");
+        return;
+    }
     
-    string wearerStatus = "ENABLED";
-    if (!gWearerAccess) wearerStatus = "DISABLED";
-    
-    string dialog = "\n[ PERMISSIONS MANAGEMENT ]\n";
-    dialog += "Your Access: " + accessTitle + "\n\n";
-    dialog += "Primary Admin: " + llKey2Name(gPrimaryAdmin) + "\n";
-    dialog += "Administrators: " + (string)llGetListLength(gAdministrators) + "\n";
-    dialog += "Trusted Users: " + (string)llGetListLength(gTrustedUsers) + "\n";
-    dialog += "Wearer Access: " + wearerStatus + "\n\n";
+    gCurrentUser = user;
+    string dialog = "\n[ A.R.I.A. PERMISSIONS ]\n";
+    dialog += "Your Access: " + Auth2Str(auth) + "\n\n";
+    dialog += "Owners: " + (string)llGetListLength(g_lOwner) + "\n";
+    dialog += "Trusted: " + (string)llGetListLength(g_lTrust) + "\n";
+    dialog += "Blocked: " + (string)llGetListLength(g_lBlock) + "\n";
     
     list buttons = [];
     
-    // Primary Admin gets all options
-    if (userAccess == ACCESS_PRIMARY_ADMIN) {
-        buttons = ["Add Admin", "Rem Admin", "Add Trusted", "Rem Trusted", "Block Wearer", "List Users"];
-        if (!gWearerAccess) {
-            buttons = llListReplaceList(buttons, ["Allow Wearer"], 4, 4);
-        }
-    }
-    // Regular Admins can manage trusted users and wearer access
-    else if (userAccess == ACCESS_ADMIN) {
-        buttons = ["Add Trusted", "Rem Trusted", "Block Wearer", "List Users"];
-        if (!gWearerAccess) {
-            buttons = llListReplaceList(buttons, ["Allow Wearer"], 2, 2);
-        }
-    }
-    // Wearer can only view their status
-    else if (userAccess == ACCESS_WEARER) {
-        buttons = ["List Users", "Status"];
+    // Owner management (only owners can modify)
+    if(auth >= CMD_OWNER) {
+        buttons += ["+ Owner", "- Owner"];
     }
     
-    buttons += ["-Main-"];
+    // Trust management (owners and wearer can modify)
+    if(auth >= CMD_OWNER || (auth == CMD_WEARER)) {
+        buttons += ["+ Trust", "- Trust"];
+    }
+    
+    // Block management (only owners can modify)
+    if(auth >= CMD_OWNER) {
+        buttons += ["+ Block", "- Block"];
+    }
+    
+    // Access settings (only owners can modify)
+    if(auth >= CMD_OWNER) {
+        if(g_iPublic) buttons += ["Public: ON"];
+        else buttons += ["Public: OFF"];
+        
+        if(g_iLimitRange) buttons += ["Range: ON"];
+        else buttons += ["Range: OFF"];
+    }
+    
+    buttons += ["Get Auth", "CLOSE"];
     
     open_menu(user, dialog, buttons);
 }
 
-// Build avatar scan menu for adding users
-buildScanMenu(key user, integer page) {
-    gScanResults_Page = page;
+// Scan for nearby users
+startUserScan(key requester, integer mode) {
+    gPermissionState = mode;
+    gCurrentUser = requester;
+    gScanResults_Keys = [];
+    gScanResults_Names = [];
+    gScanResults_Page = 0;
     
-    list buttons = [];
-    integer start = page * 9;
-    integer end = start + 8;
-    integer maxResults = llGetListLength(gScanResults_Names);
-    integer i = start;
-    
-    while (i <= end && i < maxResults) {
-        string name = llList2String(gScanResults_Names, i);
-        // Truncate long names for button display
-        if (llStringLength(name) > 12) {
-            name = llGetSubString(name, 0, 11);
-        }
-        buttons += [name];
-        i++;
-    }
-    
-    if (start > 0) buttons += ["<-- Back"];
-    if (end < maxResults - 1) buttons += ["Next -->"];
-    buttons += ["-Cancel-"];
-    
-    string title = "ADD ADMINISTRATOR";
-    if (gPermissionState == 3) title = "ADD TRUSTED USER";
-    
-    open_menu(user, "\n[ " + title + " ]\nSelect an avatar to add:", buttons);
+    llSensor("", "", AGENT, 20.0, PI);
 }
 
-// Build removal menu for existing users
-buildRemoveMenu(key user, integer page) {
-    gScanResults_Page = page;
-    
-    list sourceList = [];
-    string title = "";
-    
-    if (gPermissionState == 2) {
-        sourceList = gAdministrators;
-        title = "REMOVE ADMINISTRATOR";
-    } else if (gPermissionState == 4) {
-        sourceList = gTrustedUsers;
-        title = "REMOVE TRUSTED USER";
-    }
-    
-    gScanResults_Keys = sourceList;
-    gScanResults_Names = [];
-    
-    integer maxUsers = llGetListLength(sourceList);
-    integer i = 0;
-    while (i < maxUsers) {
-        key userKey = (key)llList2String(sourceList, i);
-        string userName = llKey2Name(userKey);
-        if (userName == "") userName = "Unknown User";
-        
-        // Truncate long names for button display
-        if (llStringLength(userName) > 12) {
-            userName = llGetSubString(userName, 0, 11);
-        }
-        gScanResults_Names += [userName];
-        i++;
-    }
-    
-    list buttons = [];
-    integer start = page * 9;
-    integer end = start + 8;
-    i = start;
-    while (i <= end && i < maxUsers) {
-        buttons += [llList2String(gScanResults_Names, i)];
-        i++;
-    }
-    
-    if (start > 0) buttons += ["<-- Back"];
-    if (end < maxUsers - 1) buttons += ["Next -->"];
-    buttons += ["-Cancel-"];
-    
-    if (maxUsers == 0) {
-        llInstantMessage(user, "No users to remove from this category.");
-        gPermissionState = 0;
-        buildMainMenu(user);
+// Build scan results menu
+showScanResults() {
+    if(llGetListLength(gScanResults_Keys) == 0) {
+        llInstantMessage(gCurrentUser, "No users found nearby. Try again when closer to people.");
+        openPermissionMenu(gCurrentUser);
         return;
     }
     
-    open_menu(user, "\n[ " + title + " ]\nSelect a user to remove:", buttons);
+    string dialog = "\n[ SELECT USER ]\n\n";
+    
+    if(gPermissionState == 1) dialog += "Add as Owner:\n";
+    else if(gPermissionState == 2) dialog += "Remove Owner:\n";
+    else if(gPermissionState == 3) dialog += "Add as Trusted:\n";
+    else if(gPermissionState == 4) dialog += "Remove Trusted:\n";
+    else if(gPermissionState == 5) dialog += "Add to Blocked:\n";
+    else if(gPermissionState == 6) dialog += "Remove from Blocked:\n";
+    
+    integer start = gScanResults_Page * 9;
+    integer end = start + 8;
+    if(end >= llGetListLength(gScanResults_Names)) {
+        end = llGetListLength(gScanResults_Names) - 1;
+    }
+    
+    list buttons = [];
+    integer i;
+    for(i = start; i <= end && i < llGetListLength(gScanResults_Names); i++) {
+        string name = llList2String(gScanResults_Names, i);
+        if(llStringLength(name) > 24) {
+            name = llGetSubString(name, 0, 23);
+        }
+        buttons += [name];
+        dialog += name + "\n";
+    }
+    
+    // Add navigation if needed
+    if(gScanResults_Page > 0) buttons += ["< PREV"];
+    if(end < llGetListLength(gScanResults_Names) - 1) buttons += ["NEXT >"];
+    
+    buttons += ["BACK", "CLOSE"];
+    
+    open_menu(gCurrentUser, dialog, buttons);
 }
 
-// Show user lists
-showUserLists(key user) {
-    string message = "\n[ USER ACCESS LISTS ]\n\n";
+// Process user selection from scan
+processUserSelection(string selection) {
+    integer idx = llListFindList(gScanResults_Names, [selection]);
+    if(idx == -1) return;
     
-    message += "PRIMARY ADMIN:\n";
-    string primaryName = llKey2Name(gPrimaryAdmin);
-    if (primaryName == "") primaryName = "Unknown User";
-    message += "• " + primaryName + "\n\n";
+    key selectedUser = llList2String(gScanResults_Keys, idx);
+    string userName = llList2String(gScanResults_Names, idx);
     
-    message += "ADMINISTRATORS (" + (string)llGetListLength(gAdministrators) + "):\n";
-    if (llGetListLength(gAdministrators) == 0) {
-        message += "• None\n";
-    } else {
-        integer i;
-        for (i = 0; i < llGetListLength(gAdministrators) && i < 5; i++) {
-            key adminKey = (key)llList2String(gAdministrators, i);
-            string adminName = llKey2Name(adminKey);
-            if (adminName == "") adminName = "Unknown User";
-            message += "• " + adminName + "\n";
-        }
-        if (llGetListLength(gAdministrators) > 5) {
-            message += "• ... and " + (string)(llGetListLength(gAdministrators) - 5) + " more\n";
-        }
+    if(gPermissionState == 1) { // Add Owner
+        g_lOwner = AddUniquePerson(g_lOwner, selectedUser);
+        // Remove from other lists
+        g_lTrust = RemovePerson(g_lTrust, selectedUser);
+        g_lBlock = RemovePerson(g_lBlock, selectedUser);
+        llInstantMessage(gCurrentUser, userName + " added as Owner.");
+        llInstantMessage(selectedUser, "You have been added as owner of " + llKey2Name(g_kWearer) + "'s A.R.I.A. unit.");
+    }
+    else if(gPermissionState == 2) { // Remove Owner
+        g_lOwner = RemovePerson(g_lOwner, selectedUser);
+        llInstantMessage(gCurrentUser, userName + " removed from Owners.");
+        llInstantMessage(selectedUser, "You have been removed as owner of " + llKey2Name(g_kWearer) + "'s A.R.I.A. unit.");
+    }
+    else if(gPermissionState == 3) { // Add Trusted
+        g_lTrust = AddUniquePerson(g_lTrust, selectedUser);
+        // Remove from block list
+        g_lBlock = RemovePerson(g_lBlock, selectedUser);
+        llInstantMessage(gCurrentUser, userName + " added as Trusted user.");
+        llInstantMessage(selectedUser, "You have been added as trusted user of " + llKey2Name(g_kWearer) + "'s A.R.I.A. unit.");
+    }
+    else if(gPermissionState == 4) { // Remove Trusted
+        g_lTrust = RemovePerson(g_lTrust, selectedUser);
+        llInstantMessage(gCurrentUser, userName + " removed from Trusted users.");
+        llInstantMessage(selectedUser, "You have been removed as trusted user of " + llKey2Name(g_kWearer) + "'s A.R.I.A. unit.");
+    }
+    else if(gPermissionState == 5) { // Add Block
+        g_lBlock = AddUniquePerson(g_lBlock, selectedUser);
+        // Remove from other lists
+        g_lOwner = RemovePerson(g_lOwner, selectedUser);
+        g_lTrust = RemovePerson(g_lTrust, selectedUser);
+        llInstantMessage(gCurrentUser, userName + " added to Blocked list.");
+        llInstantMessage(selectedUser, "You have been blocked from " + llKey2Name(g_kWearer) + "'s A.R.I.A. unit.");
+    }
+    else if(gPermissionState == 6) { // Remove Block
+        g_lBlock = RemovePerson(g_lBlock, selectedUser);
+        llInstantMessage(gCurrentUser, userName + " removed from Blocked list.");
+        llInstantMessage(selectedUser, "You have been unblocked from " + llKey2Name(g_kWearer) + "'s A.R.I.A. unit.");
     }
     
-    message += "\nTRUSTED USERS (" + (string)llGetListLength(gTrustedUsers) + "):\n";
-    if (llGetListLength(gTrustedUsers) == 0) {
-        message += "• None\n";
-    } else {
-        integer i;
-        for (i = 0; i < llGetListLength(gTrustedUsers) && i < 5; i++) {
-            key trustedKey = (key)llList2String(gTrustedUsers, i);
-            string trustedName = llKey2Name(trustedKey);
-            if (trustedName == "") trustedName = "Unknown User";
-            message += "• " + trustedName + "\n";
-        }
-        if (llGetListLength(gTrustedUsers) > 5) {
-            message += "• ... and " + (string)(llGetListLength(gTrustedUsers) - 5) + " more\n";
-        }
-    }
-    
-    message += "\nWEARER ACCESS: ";
-    if (gWearerAccess) {
-        message += "ENABLED\n";
-        string wearerName = llKey2Name(wearer);
-        if (wearerName == "") wearerName = "Unknown User";
-        message += "• " + wearerName;
-    } else {
-        message += "DISABLED";
-    }
-    
-    llInstantMessage(user, message);
-}
-
-// Update user lists and broadcast to main kernel
-updateUserLists() {
-    string admin_csv = llList2CSV(gAdministrators);
-    string trusted_csv = llList2CSV(gTrustedUsers);
-    string update_string = admin_csv + "|" + trusted_csv + "|" + (string)gWearerAccess;
-    llMessageLinked(LINK_ROOT, UPDATE_USER_LISTS, update_string, NULL_KEY);
+    // Reset state and return to main menu
+    gPermissionState = 0;
+    openPermissionMenu(gCurrentUser);
 }
 
 // --- MAIN SCRIPT LOGIC ---
 default {
     state_entry() {
-        wearer = llGetOwner();
-        gPrimaryAdmin = llGetOwner();
+        g_kWearer = llGetOwner();
         
-        // Initialize with Primary Admin in admin list
-        gAdministrators = [gPrimaryAdmin];
-        gWearerAccess = TRUE;
+        // Initialize with owner as first owner if no owners exist
+        if(llGetListLength(g_lOwner) == 0) {
+            g_lOwner = [g_kWearer];
+        }
         
-        gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -7, -1));
-        llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Permissions", NULL_KEY);
+        gMenuChannel = (integer)("0x" + llGetSubString((string)llGetKey(), -7, -1));
         
-        llOwnerSay("Simplified Permissions Module v2.0 initialized.");
-        llOwnerSay("Access Hierarchy: Primary Admin > Admin > Trusted > Wearer");
+        llOwnerSay("A.R.I.A. Permission Module v3.0 initialized with OpenCollar auth system.");
         
-        updateUserLists();
+        // Register with master kernel
+        llMessageLinked(LINK_SET, MODULE_REGISTER, "Permissions", NULL_KEY);
     }
 
     link_message(integer sender, integer num, string msg, key id) {
-        if (num == OPEN_MY_MENU) {
-            key user = (key)msg;
-            if (canAccessPermissions(user)) {
-                gCurrentUser = user;
-                gPermissionState = 0;
-                buildMainMenu(user);
-            } else {
-                llInstantMessage(user, "Access denied. Permissions module restricted to Primary Admin, Administrators, and Wearer only.");
-            }
-        } 
-        else if (num == UPDATE_CONFIG) {
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llGetListLength(parts) >= 3) {
-                string admin_csv = llList2String(parts, 0);
-                string trusted_csv = llList2String(parts, 1);
-                gWearerAccess = (integer)llList2String(parts, 2);
-                
-                if (admin_csv != "") gAdministrators = llCSV2List(admin_csv);
-                if (trusted_csv != "") gTrustedUsers = llCSV2List(trusted_csv);
-                
-                // Ensure Primary Admin is always in admin list
-                if (llListFindList(gAdministrators, [gPrimaryAdmin]) == -1) {
-                    gAdministrators = [gPrimaryAdmin] + gAdministrators;
-                }
-            }
+        if(num == AUTH_REQUEST) {
+            // This is the core of the new auth system
+            integer iAuth = CalcAuth(id);
+            llMessageLinked(LINK_SET, AUTH_REPLY, "AuthReply|" + (string)id + "|" + (string)iAuth, msg);
         }
-    }
-
-    sensor(integer num_detected) {
-        gScanResults_Keys = [];
-        gScanResults_Names = [];
-        
-        integer i = 0;
-        while (i < num_detected) {
-            key detectedKey = llDetectedKey(i);
-            string detectedName = llDetectedName(i);
-            
-            // Don't add the wearer or primary admin to scan results
-            if (detectedKey != wearer && detectedKey != gPrimaryAdmin) {
-                // For admin addition, don't show existing admins
-                if (gPermissionState == 1 && llListFindList(gAdministrators, [detectedKey]) != -1) {
-                    // Skip existing admin
-                } 
-                // For trusted addition, don't show existing trusted or admins
-                else if (gPermissionState == 3 && 
-                         (llListFindList(gTrustedUsers, [detectedKey]) != -1 || 
-                          llListFindList(gAdministrators, [detectedKey]) != -1)) {
-                    // Skip existing trusted or admin
-                } 
-                else {
-                    gScanResults_Keys += [detectedKey];
-                    gScanResults_Names += [detectedName];
-                }
-            }
-            i++;
+        else if(num == OPEN_MY_MENU) {
+            openPermissionMenu((key)msg);
         }
-        
-        if (llGetListLength(gScanResults_Keys) > 0) {
-            buildScanMenu(gCurrentUser, 0);
-        } else {
-            llInstantMessage(gCurrentUser, "No eligible avatars found in range.");
-            gPermissionState = 0;
-            buildMainMenu(gCurrentUser);
+        else if(num == MODULE_REGISTER) {
+            // Ignore - this is our own registration
         }
-    }
-    
-    no_sensor() {
-        llInstantMessage(gCurrentUser, "No avatars found in range.");
-        gPermissionState = 0;
-        buildMainMenu(gCurrentUser);
     }
 
     listen(integer chan, string name, key id, string msg) {
-        if (chan != gMenuChannel) return;
+        if(chan != gMenuChannel) return;
+        if(id != gCurrentUser) return;
         
-        gCurrentUser = id;
+        llSetTimerEvent(0.0);
         llListenRemove(gListenHandle);
         
-        // Check access level for current user
-        integer userAccess = getAccessLevel(id);
+        if(msg == "CLOSE") return;
         
-        if (msg == "Add Admin" && userAccess >= ACCESS_PRIMARY_ADMIN) { 
-            gPermissionState = 1;
-            llSensor("", NULL_KEY, AGENT, 20.0, PI);
-        }
-        else if (msg == "Rem Admin" && userAccess >= ACCESS_PRIMARY_ADMIN) { 
-            if (llGetListLength(gAdministrators) <= 1) {
-                llInstantMessage(id, "Cannot remove administrators. Primary Admin must remain, and at least one other admin is recommended.");
-                buildMainMenu(id);
-                return;
+        if(gPermissionState == 0) { // Main menu
+            if(msg == "+ Owner") {
+                startUserScan(id, 1);
             }
-            gPermissionState = 2;
-            buildRemoveMenu(id, 0);
-        }
-        else if (msg == "Add Trusted" && userAccess >= ACCESS_ADMIN) { 
-            gPermissionState = 3;
-            llSensor("", NULL_KEY, AGENT, 20.0, PI);
-        }
-        else if (msg == "Rem Trusted" && userAccess >= ACCESS_ADMIN) { 
-            gPermissionState = 4;
-            buildRemoveMenu(id, 0);
-        }
-        else if ((msg == "Block Wearer" || msg == "Allow Wearer") && userAccess >= ACCESS_ADMIN) {
-            gWearerAccess = !gWearerAccess;
-            
-            string status = "BLOCKED";
-            if (gWearerAccess) status = "ALLOWED";
-            
-            llInstantMessage(id, "Wearer access is now: " + status);
-            if (gWearerAccess) {
-                llInstantMessage(wearer, "// Access restored by administrator. //");
-            } else {
-                llInstantMessage(wearer, "// Access has been restricted by administrator. //");
+            else if(msg == "- Owner") {
+                startUserScan(id, 2);
             }
-            
-            updateUserLists();
-            buildMainMenu(id);
-        }
-        else if (msg == "List Users") {
-            showUserLists(id);
-            buildMainMenu(id);
-        }
-        else if (msg == "Status" && userAccess >= ACCESS_WEARER) {
-            string statusMsg = "Your current access level: ";
-            if (userAccess == ACCESS_PRIMARY_ADMIN) statusMsg += "PRIMARY ADMIN (Full Control)";
-            else if (userAccess == ACCESS_ADMIN) statusMsg += "ADMINISTRATOR (Full Access)";
-            else if (userAccess == ACCESS_TRUSTED) statusMsg += "TRUSTED USER (Limited Access)";
-            else if (userAccess == ACCESS_WEARER) statusMsg += "WEARER (Basic Access)";
-            else statusMsg += "ACCESS DENIED";
-            
-            llInstantMessage(id, statusMsg);
-            buildMainMenu(id);
-        }
-        else if (msg == "Next -->") {
-            if (gPermissionState == 1 || gPermissionState == 3) {
-                buildScanMenu(id, gScanResults_Page + 1);
-            } else {
-                buildRemoveMenu(id, gScanResults_Page + 1);
+            else if(msg == "+ Trust") {
+                startUserScan(id, 3);
             }
-        }
-        else if (msg == "<-- Back") {
-            if (gScanResults_Page > 0) {
-                if (gPermissionState == 1 || gPermissionState == 3) {
-                    buildScanMenu(id, gScanResults_Page - 1);
-                } else {
-                    buildRemoveMenu(id, gScanResults_Page - 1);
-                }
+            else if(msg == "- Trust") {
+                startUserScan(id, 4);
             }
-        }
-        else if (msg == "-Cancel-" || msg == "-Main-") {
-            gPermissionState = 0;
-            buildMainMenu(id);
-        }
-        else {
-            // Handle user selection
-            integer index = llListFindList(gScanResults_Names, [msg]);
-            if (index != -1) {
-                key targetKey = (key)llList2String(gScanResults_Keys, index);
-                string targetName = llList2String(gScanResults_Names, index);
-                
-                if (gPermissionState == 1) {
-                    // Add Administrator
-                    if (llListFindList(gAdministrators, [targetKey]) == -1) {
-                        gAdministrators += [targetKey];
-                        llInstantMessage(id, targetName + " added as Administrator.");
-                        llInstantMessage(targetKey, "You have been granted Administrator access to " + llGetObjectName() + " by " + llKey2Name(id) + ".");
-                    }
-                } 
-                else if (gPermissionState == 2) {
-                    // Remove Administrator
-                    if (targetKey != gPrimaryAdmin) {
-                        integer admin_index = llListFindList(gAdministrators, [targetKey]);
-                        if (admin_index != -1) {
-                            gAdministrators = llDeleteSubList(gAdministrators, admin_index, admin_index);
-                            llInstantMessage(id, targetName + " removed from Administrators.");
-                            llInstantMessage(targetKey, "Your Administrator access to " + llGetObjectName() + " has been revoked by " + llKey2Name(id) + ".");
-                        }
+            else if(msg == "+ Block") {
+                startUserScan(id, 5);
+            }
+            else if(msg == "- Block") {
+                startUserScan(id, 6);
+            }
+            else if(msg == "Public: ON" || msg == "Public: OFF") {
+                integer auth = CalcAuth(id);
+                if(auth >= CMD_OWNER) {
+                    g_iPublic = !g_iPublic;
+                    if(g_iPublic) {
+                        llInstantMessage(id, "Public access enabled.");
                     } else {
-                        llInstantMessage(id, "Cannot remove Primary Administrator.");
+                        llInstantMessage(id, "Public access disabled.");
                     }
-                } 
-                else if (gPermissionState == 3) {
-                    // Add Trusted User
-                    if (llListFindList(gTrustedUsers, [targetKey]) == -1) {
-                        gTrustedUsers += [targetKey];
-                        llInstantMessage(id, targetName + " added as Trusted User.");
-                        llInstantMessage(targetKey, "You have been granted Trusted User access to " + llGetObjectName() + " by " + llKey2Name(id) + ".");
-                    }
-                } 
-                else if (gPermissionState == 4) {
-                    // Remove Trusted User
-                    integer trusted_index = llListFindList(gTrustedUsers, [targetKey]);
-                    if (trusted_index != -1) {
-                        gTrustedUsers = llDeleteSubList(gTrustedUsers, trusted_index, trusted_index);
-                        llInstantMessage(id, targetName + " removed from Trusted Users.");
-                        llInstantMessage(targetKey, "Your Trusted User access to " + llGetObjectName() + " has been revoked by " + llKey2Name(id) + ".");
-                    }
+                    openPermissionMenu(id);
                 }
-                
-                updateUserLists();
+            }
+            else if(msg == "Range: ON" || msg == "Range: OFF") {
+                integer auth = CalcAuth(id);
+                if(auth >= CMD_OWNER) {
+                    g_iLimitRange = !g_iLimitRange;
+                    if(g_iLimitRange) {
+                        llInstantMessage(id, "Range limiting enabled (20m).");
+                    } else {
+                        llInstantMessage(id, "Range limiting disabled.");
+                    }
+                    openPermissionMenu(id);
+                }
+            }
+            else if(msg == "Get Auth") {
+                integer auth = CalcAuth(id);
+                llInstantMessage(id, "Your access level: " + Auth2Str(auth) + " (" + (string)auth + ")");
+                openPermissionMenu(id);
+            }
+        }
+        else { // User selection menu
+            if(msg == "BACK") {
                 gPermissionState = 0;
-                buildMainMenu(id);
+                openPermissionMenu(id);
+            }
+            else if(msg == "< PREV") {
+                gScanResults_Page--;
+                if(gScanResults_Page < 0) gScanResults_Page = 0;
+                showScanResults();
+            }
+            else if(msg == "NEXT >") {
+                gScanResults_Page++;
+                showScanResults();
+            }
+            else {
+                processUserSelection(msg);
             }
         }
     }
-    
+
+    sensor(integer detected) {
+        gScanResults_Keys = [];
+        gScanResults_Names = [];
+        
+        integer i;
+        for(i = 0; i < detected; i++) {
+            key detected_key = llDetectedKey(i);
+            string detected_name = llDetectedName(i);
+            
+            // Don't include self
+            if(detected_key != g_kWearer) {
+                gScanResults_Keys += [detected_key];
+                gScanResults_Names += [detected_name];
+            }
+        }
+        
+        showScanResults();
+    }
+
+    no_sensor() {
+        llInstantMessage(gCurrentUser, "No users detected nearby. Try again when closer to people.");
+        gPermissionState = 0;
+        openPermissionMenu(gCurrentUser);
+    }
+
     timer() {
+        llSetTimerEvent(0.0);
         llListenRemove(gListenHandle);
         gPermissionState = 0;
-        llOwnerSay("Permissions menu timed out.");
-    }
-    
-    changed(integer change) {
-        if (change & CHANGED_OWNER) {
-            llResetScript();
-        }
     }
 }
