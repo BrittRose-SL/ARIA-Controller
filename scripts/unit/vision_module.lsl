@@ -1,31 +1,35 @@
 //-- A.R.I.A. Vision RLV Module (Add-on)
-//-- Version 2.1 - PERMISSIONS SYSTEM INTEGRATED
-//-- Fixed RLV commands, improved overlay handling, enhanced permission system
-//-- CHANGES v2.1: Integrated standardized permissions system from template,
-//                 Added proper access control for all menu functions,
-//                 Fixed initialization order and permission synchronization
+//-- Version 3.0 - OPENCOLLAR AUTH INTEGRATION
+//-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.0:
+//--   - Removed synchronous getAccessLevel() and checkModuleAccess() functions
+//--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
+//--   - Added pending auth request management for vision operations
+//--   - Removed old permission variables and UPDATE_CONFIG handling
+//--   - All menu functions now use async auth checks
+//--   - Enhanced vision control security with granular actions
 
 // --- LINKED MESSAGE CODES ---
 integer UPDATE_BATTERY = 101;
-integer UPDATE_CONFIG = 102;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
 
-// --- PERMISSION VARIABLES (REQUIRED) ---
-list gAdministrators;
-list gTrustedUsers;
-key wearer;
-integer gWearerAdminMode = TRUE;
-integer gConfigReceived = FALSE;
+// --- AUTH SYSTEM CODES ---
+integer AUTH_REQUEST = 600;
+integer AUTH_REPLY = 601;
 
-// --- PERMISSION LEVELS (REQUIRED) ---
-integer ACCESS_ADMIN = 4;
-integer ACCESS_TRUSTED = 3;
-integer ACCESS_WEARER = 2;
-integer ACCESS_PUBLIC = 1;
+// --- AUTH LEVEL CONSTANTS (matching permission module) ---
+integer CMD_OWNER = 500;
+integer CMD_TRUSTED = 501;
+integer CMD_GROUP = 502;
+integer CMD_WEARER = 503;
+integer CMD_EVERYONE = 504;
+integer CMD_BLOCKED = 598;
+integer CMD_NOACCESS = 599;
 
 // --- STATE VARIABLES ---
+key g_kWearer;
 float gBatteryLevel = 100.0;
 integer gMenuChannel;
 integer gListenHandle;
@@ -52,188 +56,291 @@ list gAvailableOverlays = [
 list gNameWhitelist;
 list gNameBlacklist;
 
-// --- PERMISSION FUNCTIONS (REQUIRED) ---
+// --- ASYNCHRONOUS AUTH SYSTEM ---
+list gPendingAuthRequests;  // Format: [requestId, userKey, action, timestamp, ...]
+integer gNextRequestId = 1;
+integer gAuthTimeoutSeconds = 30;
 
-// This function MUST be included in every module
-integer getAccessLevel(key id) {
-    // Check administrator list first
-    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
+// --- MENU VARIABLES ---
+key gCurrentMenuUser;
+string gCurrentMenuContext = ""; // Track which menu context we're in
+
+// --- AUTH MANAGEMENT FUNCTIONS ---
+
+// Request auth for a specific vision action
+requestVisionAuth(key user, string action) {
+    string requestId = (string)gNextRequestId;
+    gNextRequestId++;
     
-    // Check trusted users list
-    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
+    // Store pending request: [requestId, userKey, action, timestamp]
+    integer timestamp = llGetUnixTime();
+    gPendingAuthRequests += [requestId, user, action, timestamp];
     
-    // Check if it's the wearer
-    if (id == wearer) {
-        // Wearer access depends on wearer admin mode
-        if (gWearerAdminMode) {
-            return ACCESS_ADMIN;
+    // Send auth request to permission module
+    llMessageLinked(LINK_SET, AUTH_REQUEST, action, user);
+    
+    // Start cleanup timer
+    llSetTimerEvent(5.0);
+}
+
+// Process auth response and execute authorized action
+processVisionAuth(key user, integer authLevel, string action) {
+    // Find and remove the pending request
+    integer idx = llListFindList(gPendingAuthRequests, [user]);
+    if (idx == -1) return; // Request not found
+    
+    string originalAction = llList2String(gPendingAuthRequests, idx + 1);
+    gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, idx - 1, idx + 2);
+    
+    // Vision operations require trusted access minimum
+    if (authLevel >= CMD_TRUSTED) {
+        executeVisionAction(user, action);
+    } else {
+        llInstantMessage(user, "Access denied. Trusted User permissions required for Vision RLV Module.");
+    }
+}
+
+// Execute the requested vision action after auth confirmation
+executeVisionAction(key user, string action) {
+    if (action == "VISION_MENU") {
+        openControlMenu(user);
+    }
+    else if (action == "TOGGLE_BLINDFOLD") {
+        gIsBlindfolded = !gIsBlindfolded;
+        if (gIsBlindfolded) {
+            llInstantMessage(g_kWearer, "// Visual sensor array offline. Vision restricted. //");
         } else {
-            return ACCESS_WEARER;
+            llInstantMessage(g_kWearer, "// Visual sensor array online. //");
+        }
+        applyRestrictions();
+        llInstantMessage(user, "Blindfold setting updated.");
+        openControlMenu(user);
+    }
+    else if (action == "TOGGLE_BLUR") {
+        gIsBlurred = !gIsBlurred;
+        if (gIsBlurred) {
+            llInstantMessage(g_kWearer, "// Visual clarity degraded. Image processing compromised. //");
+        } else {
+            llInstantMessage(g_kWearer, "// Visual clarity restored. //");
+        }
+        applyRestrictions();
+        llInstantMessage(user, "Blur setting updated.");
+        openControlMenu(user);
+    }
+    else if (action == "TOGGLE_CENSOR") {
+        gIsCensored = !gIsCensored;
+        if (gIsCensored) {
+            llInstantMessage(g_kWearer, "// Content filtering engaged. Adult content censored. //");
+        } else {
+            llInstantMessage(g_kWearer, "// Content filtering disengaged. //");
+        }
+        applyRestrictions();
+        llInstantMessage(user, "Censor setting updated.");
+        openControlMenu(user);
+    }
+    else if (action == "TOGGLE_NAMES") {
+        gShowNamesBlocked = !gShowNamesBlocked;
+        if (gShowNamesBlocked) {
+            llInstantMessage(g_kWearer, "// Identity recognition offline. Names obscured. //");
+        } else {
+            llInstantMessage(g_kWearer, "// Identity recognition online. //");
+        }
+        applyRestrictions();
+        llInstantMessage(user, "Name visibility setting updated.");
+        openControlMenu(user);
+    }
+    else if (action == "OVERLAY_MENU") {
+        gCurrentMenuContext = "OVERLAY";
+        openOverlayMenu(user);
+    }
+    else if (action == "NAME_PERMS_MENU") {
+        gCurrentMenuContext = "NAME_PERMS";
+        openNamePermissionsMenu(user);
+    }
+    else if (action == "CLEAR_ALL") {
+        gIsBlindfolded = FALSE;
+        gIsBlurred = FALSE;
+        gIsCensored = FALSE;
+        gShowNamesBlocked = FALSE;
+        gHasOverlay = FALSE;
+        gCurrentOverlay = "";
+        llInstantMessage(g_kWearer, "// All visual restrictions cleared. Full optical systems online. //");
+        applyRestrictions();
+        llInstantMessage(user, "All vision restrictions cleared.");
+        openControlMenu(user);
+    }
+    else if (action == "BLACKOUT_ALL") {
+        gIsBlindfolded = TRUE;
+        gIsBlurred = TRUE;
+        gIsCensored = TRUE;
+        gShowNamesBlocked = TRUE;
+        llInstantMessage(g_kWearer, "// TOTAL VISUAL BLACKOUT: All optical systems offline. //");
+        applyRestrictions();
+        llInstantMessage(user, "Total vision blackout activated.");
+        openControlMenu(user);
+    }
+    else if (action == "CLEAR_OVERLAY") {
+        gCurrentOverlay = "";
+        gHasOverlay = FALSE;
+        llInstantMessage(user, "Visual overlay cleared.");
+        openOverlayMenu(user);
+    }
+    else if (action == "CLEAR_WHITELIST") {
+        gNameWhitelist = [];
+        llInstantMessage(user, "Name visibility whitelist cleared.");
+        openNamePermissionsMenu(user);
+    }
+    else if (action == "CLEAR_BLACKLIST") {
+        gNameBlacklist = [];
+        llInstantMessage(user, "Name visibility blacklist cleared.");
+        openNamePermissionsMenu(user);
+    }
+    else if (action == "ADD_ADMIN_TO_WL") {
+        if (llListFindList(gNameWhitelist, [user]) == -1) {
+            gNameWhitelist += [user];
+            llInstantMessage(user, "You have been added to the name visibility whitelist.");
+        } else {
+            llInstantMessage(user, "You are already on the name visibility whitelist.");
+        }
+        openNamePermissionsMenu(user);
+    }
+    else if (action == "SHOW_LISTS") {
+        showNameLists(user);
+        openNamePermissionsMenu(user);
+    }
+    else if (llSubStringIndex(action, "OVERLAY:") == 0) {
+        // Handle overlay selection: "OVERLAY:overlay_name"
+        string overlayName = llGetSubString(action, 8, -1);
+        if (llGetInventoryType(overlayName) == INVENTORY_TEXTURE) {
+            gCurrentOverlay = overlayName;
+            gHasOverlay = TRUE;
+            llInstantMessage(user, "Overlay '" + overlayName + "' applied.");
+        } else {
+            llInstantMessage(user, "Overlay texture '" + overlayName + "' not found in inventory.");
+        }
+        openOverlayMenu(user);
+    }
+}
+
+// Clean up expired auth requests
+cleanupAuthRequests() {
+    integer currentTime = llGetUnixTime();
+    integer i = 0;
+    
+    while (i < llGetListLength(gPendingAuthRequests)) {
+        integer requestTime = llList2Integer(gPendingAuthRequests, i + 3);
+        if (currentTime - requestTime > gAuthTimeoutSeconds) {
+            // Remove expired request
+            gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, i, i + 3);
+        } else {
+            i += 4; // Move to next request
         }
     }
-    
-    // Everyone else gets public access
-    return ACCESS_PUBLIC;
 }
 
-// This function should be called at the start of any menu function
-integer checkModuleAccess(key user, integer requiredLevel, string moduleName) {
-    integer access = getAccessLevel(user);
-    
-    if (access < requiredLevel) {
-        string levelName = "Public";
-        if (requiredLevel == ACCESS_WEARER) levelName = "Wearer";
-        else if (requiredLevel == ACCESS_TRUSTED) levelName = "Trusted User";
-        else if (requiredLevel == ACCESS_ADMIN) levelName = "Administrator";
-        
-        llInstantMessage(user, "Access denied. " + levelName + " permissions required for Vision RLV Module.");
-        return FALSE;
-    }
-    
-    if (!gConfigReceived) {
-        llInstantMessage(user, "Module permissions not synchronized. Please try again in a moment.");
-        return FALSE;
-    }
-    
-    return TRUE;
-}
+// --- VISION MODULE FUNCTIONS ---
 
-// --- HELPER FUNCTIONS ---
+// Apply current vision restrictions based on module state and battery level
 applyRestrictions() {
-    string cmd = "@";
-    
-    // Apply blindfold (reduces draw distance dramatically)
-    if (gIsBlindfolded) {
-        cmd += "camdrawmin=0.1,camdrawmax=0.5,";
-    } else {
-        cmd += "camdrawmin=0.0,camdrawmax=512.0,";
-    }
-    
-    // Apply visual blur
-    if (gIsBlurred) {
-        cmd += "camblur=1.0,";
-    } else {
-        cmd += "camblur=0.0,";
-    }
-    
-    // Handle overlay display
-    if (gHasOverlay && gCurrentOverlay != "") {
-        // Check if overlay texture exists in inventory
-        if (llGetInventoryType(gCurrentOverlay) == INVENTORY_TEXTURE) {
-            cmd += "overlay=" + (string)llGetInventoryKey(gCurrentOverlay) + ",";
-        }
-    } else {
-        cmd += "overlay=clear,";
-    }
-    
-    // Handle name censoring
-    if (gIsCensored || gShowNamesBlocked) {
-        cmd += "shownames=n,";
-    } else {
-        cmd += "shownames=y,";
-    }
-    
-    // Low battery automatic restrictions override manual settings
-    if (gBatteryLevel <= 15.0) {
-        cmd += "shownames=n,";
-    }
-    if (gBatteryLevel <= 10.0) {
-        // Apply glitch overlay if available
-        if (llGetInventoryType("aria_glitch_overlay") == INVENTORY_TEXTURE) {
-            cmd += "overlay=" + (string)llGetInventoryKey("aria_glitch_overlay") + ",";
-        }
-    }
-    if (gBatteryLevel <= 5.0) {
-        cmd += "camdrawmin=0.1,camdrawmax=1.0,camblur=1.0,";
-    }
-    
-    // Apply whitelist/blacklist for name visibility
-    integer i;
-    for (i = 0; i < llGetListLength(gNameWhitelist); i++) {
-        cmd += "showname:" + (string)llList2String(gNameWhitelist, i) + "=rem,";
-    }
-    for (i = 0; i < llGetListLength(gNameBlacklist); i++) {
-        cmd += "showname:" + (string)llList2String(gNameBlacklist, i) + "=add,";
-    }
-    
-    // Apply all restrictions at once
-    llOwnerSay(cmd);
-}
-
-openControlMenu(key user) {
-    // Check permissions before opening menu
-    if (!checkModuleAccess(user, ACCESS_TRUSTED, "Vision RLV")) {
+    if (!gPowerState) {
+        // When powered off, remove all restrictions
+        llOwnerSay("@camunlock=y,shownames=y,viewnote=y,edit=y");
         return;
     }
     
-    integer access = getAccessLevel(user);
+    string restrictions = "";
     
-    string dialog = "\n[ VISION RLV PROTOCOLS ]\n";
-    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    dialog += "Access Level: ";
-    if (access >= ACCESS_ADMIN) {
-        dialog += "ADMINISTRATOR\n";
-    } else if (access >= ACCESS_TRUSTED) {
-        dialog += "TRUSTED USER\n";
+    // Apply user-set restrictions
+    if (gIsBlindfolded) {
+        restrictions += "@viewnote=n,";
     } else {
-        dialog += "WEARER\n";
+        restrictions += "@viewnote=y,";
     }
     
-    dialog += "Config Status: ";
-    if (gConfigReceived) {
-        dialog += "SYNCHRONIZED";
+    if (gIsBlurred) {
+        restrictions += "@setcam_blur=10,";
     } else {
-        dialog += "WAITING";
+        restrictions += "@setcam_blur=0,";
     }
-    dialog += "\n\nCurrent Status:\n";
     
+    if (gIsCensored) {
+        restrictions += "@edit=n,";
+    } else {
+        restrictions += "@edit=y,";
+    }
+    
+    if (gShowNamesBlocked) {
+        restrictions += "@shownames=n,";
+    } else {
+        restrictions += "@shownames=y,";
+    }
+    
+    // Battery-based restrictions override user settings when critical
+    if (gBatteryLevel <= 5.0) {
+        restrictions += "@viewnote=n,shownames=n,edit=n,";
+        llInstantMessage(g_kWearer, "// CRITICAL POWER: All visual systems offline. //");
+    } else if (gBatteryLevel <= 10.0) {
+        restrictions += "@viewnote=n,edit=n,";
+        llInstantMessage(g_kWearer, "// LOW POWER: Visual display systems restricted. //");
+    } else if (gBatteryLevel <= 15.0) {
+        restrictions += "@edit=n,";
+        llInstantMessage(g_kWearer, "// WARNING: Advanced visual functions disabled to preserve power. //");
+    }
+    
+    // Remove trailing comma and apply
+    if (llStringLength(restrictions) > 0) {
+        restrictions = llGetSubString(restrictions, 0, -2);
+        llOwnerSay(restrictions);
+    }
+}
+
+// Build and display the main vision control menu
+openControlMenu(key user) {
+    gCurrentMenuUser = user;
+    gCurrentMenuContext = "MAIN";
+    gMenuChannel = (integer)("0x" + llGetSubString((string)user, -7, -1));
+    
+    string dialog = "\n[ VISION RLV CONTROL ]\n\n";
+    dialog += "Battery: " + (string)((integer)gBatteryLevel) + "%\n";
+    dialog += "Power: " + (string)gPowerState + "\n\n";
+    
+    // Status indicators
     string blindStatus = "OFF";
-    if (gIsBlindfolded) blindStatus = "ON";
-    
-    string overlayStatus = "OFF";
-    if (gHasOverlay) overlayStatus = "ON";
-    
-    string censorStatus = "OFF";
-    if (gIsCensored) censorStatus = "ON";
-    
     string blurStatus = "OFF";
+    string censorStatus = "OFF";
+    string nameStatus = "OFF";
+    string overlayStatus = "NONE";
+    
+    if (gIsBlindfolded) blindStatus = "ON";
     if (gIsBlurred) blurStatus = "ON";
+    if (gIsCensored) censorStatus = "ON";
+    if (gShowNamesBlocked) nameStatus = "ON";
+    if (gHasOverlay) overlayStatus = "ACTIVE";
     
-    dialog += "• Blindfold: " + blindStatus + "\n";
-    dialog += "• Overlay: " + overlayStatus;
-    if (gHasOverlay && gCurrentOverlay != "") {
-        dialog += " (" + gCurrentOverlay + ")";
-    }
-    dialog += "\n• Name Censor: " + censorStatus + "\n";
-    dialog += "• Blur Vision: " + blurStatus + "\n";
+    dialog += "Blindfold: " + blindStatus + "\n";
+    dialog += "Blur: " + blurStatus + "\n";
+    dialog += "Censor: " + censorStatus + "\n";
+    dialog += "Hide Names: " + nameStatus + "\n";
+    dialog += "Overlay: " + overlayStatus + "\n\n";
     
+    // Battery warnings
     if (gBatteryLevel <= 15.0) {
-        dialog += "\n⚠ Low power vision restrictions active!";
+        dialog += "⚠️ LOW POWER RESTRICTIONS ACTIVE\n\n";
     }
     
-    list buttons = [];
+    dialog += "Select option to toggle:";
     
-    // All trusted users can toggle basic vision settings
-    if (access >= ACCESS_TRUSTED) {
-        buttons += [
-            "[BLINDFOLD: " + blindStatus + "]",
-            "[OVERLAY: " + overlayStatus + "]", 
-            "[CENSOR: " + censorStatus + "]",
-            "[BLUR: " + blurStatus + "]"
-        ];
-    }
-    
-    // Admin-only functions
-    if (access >= ACCESS_ADMIN) {
-        buttons += [
-            "FULL BLIND",
-            "RESTORE ALL",
-            "Overlays",
-            "Name Perms"
-        ];
-    }
-    
-    buttons += ["Close", "-Main-"];
+    list buttons = [
+        "[BLIND: " + blindStatus + "]",
+        "[BLUR: " + blurStatus + "]", 
+        "[CENSOR: " + censorStatus + "]",
+        "[NAMES: " + nameStatus + "]",
+        "Overlays",
+        "Name Perms",
+        "CLEAR ALL",
+        "BLACKOUT",
+        "Close"
+    ];
     
     llListenRemove(gListenHandle);
     gListenHandle = llListen(gMenuChannel, "", user, "");
@@ -241,42 +348,21 @@ openControlMenu(key user) {
     llSetTimerEvent(30.0);
 }
 
+// Build and display the overlay selection menu
 openOverlayMenu(key user) {
-    // Check admin permissions for overlay management
-    if (!checkModuleAccess(user, ACCESS_ADMIN, "Vision RLV Overlays")) {
-        return;
-    }
-    
-    string dialog = "\n[ VISUAL OVERLAYS ]\n";
-    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    string dialog = "\n[ VISUAL OVERLAYS ]\n\n";
     dialog += "Current: ";
-    if (gCurrentOverlay == "") {
-        dialog += "None";
-    } else {
+    if (gHasOverlay) {
         dialog += gCurrentOverlay;
+    } else {
+        dialog += "None";
     }
-    dialog += "\n\nAvailable overlays:\n";
-    
-    integer found = 0;
-    integer i;
-    string overlayName;
-    
-    for (i = 0; i < llGetListLength(gAvailableOverlays); i++) {
-        overlayName = llList2String(gAvailableOverlays, i);
-        if (llGetInventoryType(overlayName) == INVENTORY_TEXTURE) {
-            dialog += "• " + overlayName + " ✓\n";
-            found++;
-        } else {
-            dialog += "• " + overlayName + " ✗\n";
-        }
-    }
-    
-    if (found == 0) {
-        dialog += "\nNo overlay textures found in inventory.";
-    }
+    dialog += "\n\nAvailable overlays:";
     
     list buttons = [];
     string buttonName;
+    string overlayName;
+    integer i;
     
     for (i = 0; i < llGetListLength(gAvailableOverlays) && i < 8; i++) {
         overlayName = llList2String(gAvailableOverlays, i);
@@ -297,14 +383,10 @@ openOverlayMenu(key user) {
     llSetTimerEvent(30.0);
 }
 
+// Build and display the name permissions menu
 openNamePermissionsMenu(key user) {
-    // Check admin permissions for name permission management
-    if (!checkModuleAccess(user, ACCESS_ADMIN, "Vision RLV Name Permissions")) {
-        return;
-    }
-    
     string dialog = "\n[ NAME VISIBILITY PERMISSIONS ]\n";
-    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
     dialog += "Whitelist (" + (string)llGetListLength(gNameWhitelist) + " users)\n";
     dialog += "Blacklist (" + (string)llGetListLength(gNameBlacklist) + " users)\n\n";
     dialog += "Note: Use main Permissions module\nto manage detailed user lists.";
@@ -323,15 +405,41 @@ openNamePermissionsMenu(key user) {
     llSetTimerEvent(30.0);
 }
 
+// Show detailed name lists to user
+showNameLists(key user) {
+    string report = "\nName Visibility Whitelist:\n";
+    integer i;
+    if (llGetListLength(gNameWhitelist) == 0) {
+        report += "  (empty)\n";
+    } else {
+        for (i = 0; i < llGetListLength(gNameWhitelist) && i < 5; i++) {
+            report += "  " + llKey2Name((key)llList2String(gNameWhitelist, i)) + "\n";
+        }
+        if (llGetListLength(gNameWhitelist) > 5) {
+            report += "  ... and " + (string)(llGetListLength(gNameWhitelist) - 5) + " more\n";
+        }
+    }
+    
+    report += "\nName Visibility Blacklist:\n";
+    if (llGetListLength(gNameBlacklist) == 0) {
+        report += "  (empty)";
+    } else {
+        for (i = 0; i < llGetListLength(gNameBlacklist) && i < 5; i++) {
+            report += "  " + llKey2Name((key)llList2String(gNameBlacklist, i)) + "\n";
+        }
+        if (llGetListLength(gNameBlacklist) > 5) {
+            report += "  ... and " + (string)(llGetListLength(gNameBlacklist) - 5) + " more";
+        }
+    }
+    
+    llInstantMessage(user, report);
+}
+
 // --- MAIN SCRIPT LOGIC ---
 default {
     state_entry() {
-        wearer = llGetOwner();
-        gConfigReceived = FALSE;
-        
-        // Initialize with owner as admin (backup measure)
-        gAdministrators = [wearer];
-        gTrustedUsers = [];
+        g_kWearer = llGetOwner();
+        gPendingAuthRequests = [];
         
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
         
@@ -348,47 +456,24 @@ default {
         gNameBlacklist = [];
         
         // Register with main module
-        llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Vision RLV", NULL_KEY);
+        llMessageLinked(LINK_SET, MODULE_REGISTER, "Vision RLV", NULL_KEY);
         
         // Apply initial (unrestricted) state
         applyRestrictions();
         
-        llOwnerSay("Vision RLV Module v2.1 initialized successfully.");
+        llOwnerSay("Vision RLV Module v3.0 initialized with OpenCollar auth system.");
     }
-    
+
     link_message(integer sender, integer num, string msg, key id) {
-        if (num == UPDATE_CONFIG) {
-            // Receive configuration from master kernel
+        if (num == AUTH_REPLY) {
+            // Parse auth reply: "AuthReply|userKey|authLevel"
             list parts = llParseString2List(msg, ["|"], []);
-            if (llGetListLength(parts) >= 2) {
-                string adminCsv = llList2String(parts, 0);
-                string trustedCsv = llList2String(parts, 1);
+            if (llList2String(parts, 0) == "AuthReply") {
+                key user = (key)llList2String(parts, 1);
+                integer authLevel = (integer)llList2String(parts, 2);
+                string originalAction = (string)id; // The action from AUTH_REQUEST
                 
-                // Update local lists from master kernel
-                if (adminCsv != "") {
-                    gAdministrators = llCSV2List(adminCsv);
-                } else {
-                    gAdministrators = [wearer]; // Ensure owner is always admin
-                }
-                
-                if (trustedCsv != "") {
-                    gTrustedUsers = llCSV2List(trustedCsv);
-                } else {
-                    gTrustedUsers = [];
-                }
-                
-                gConfigReceived = TRUE;
-                llOwnerSay("Vision RLV permissions updated from master kernel.");
-                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
-                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
-            }
-        }
-        else if (num == OPEN_MY_MENU) {
-            key user = (key)msg;
-            
-            // Minimum trusted user access required for Vision RLV
-            if (checkModuleAccess(user, ACCESS_TRUSTED, "Vision RLV")) {
-                openControlMenu(user);
+                processVisionAuth(user, authLevel, originalAction);
             }
         }
         else if (num == UPDATE_BATTERY) {
@@ -406,261 +491,110 @@ default {
             }
         }
         else if (num == POWER_STATE_CHANGE) {
-            gPowerState = (integer)msg;
-            
-            if (!gPowerState) {
-                // Emergency power mode - apply heavy restrictions
-                gIsBlindfolded = TRUE;
-                gIsCensored = TRUE;
-                gIsBlurred = TRUE;
-                llInstantMessage(wearer, "// Emergency power mode: Visual systems severely limited. //");
+            if (msg == "ON") {
+                gPowerState = TRUE;
                 applyRestrictions();
+            } else {
+                gPowerState = FALSE;
+                // When powered off, remove all restrictions
+                llOwnerSay("@camunlock=y,shownames=y,viewnote=y,edit=y");
             }
         }
+        else if (num == OPEN_MY_MENU) {
+            key user = (key)msg;
+            // Request auth for vision menu access
+            requestVisionAuth(user, "VISION_MENU");
+        }
     }
-    
+
     listen(integer chan, string name, key id, string msg) {
         if (chan != gMenuChannel) return;
         
         llListenRemove(gListenHandle);
         
-        // Always check permissions in listen events
-        integer access = getAccessLevel(id);
-        
-        if (msg == "-Main-" || msg == "Close") {
-            if (msg == "Close") {
-                llInstantMessage(id, "Vision RLV menu closed.");
-            }
+        if (msg == "Close") {
+            llInstantMessage(id, "Vision RLV module menu closed.");
             return;
         }
         
         if (msg == "-Back-") {
-            openControlMenu(id);
+            if (gCurrentMenuContext == "OVERLAY" || gCurrentMenuContext == "NAME_PERMS") {
+                requestVisionAuth(id, "VISION_MENU");
+            }
             return;
         }
 
-        // Handle menu options with permission checks
-        if (llSubStringIndex(msg, "[BLINDFOLD:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsBlindfolded = !gIsBlindfolded;
-                if (gIsBlindfolded) {
-                    llInstantMessage(wearer, "// Visual sensors obstructed. //");
-                } else {
-                    llInstantMessage(wearer, "// Visual sensors nominal. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
+        // Handle menu actions based on context
+        if (gCurrentMenuContext == "MAIN") {
+            // Main menu actions
+            if (llSubStringIndex(msg, "[BLIND:") != -1) {
+                requestVisionAuth(id, "TOGGLE_BLINDFOLD");
+            }
+            else if (llSubStringIndex(msg, "[BLUR:") != -1) {
+                requestVisionAuth(id, "TOGGLE_BLUR");
+            }
+            else if (llSubStringIndex(msg, "[CENSOR:") != -1) {
+                requestVisionAuth(id, "TOGGLE_CENSOR");
+            }
+            else if (llSubStringIndex(msg, "[NAMES:") != -1) {
+                requestVisionAuth(id, "TOGGLE_NAMES");
+            }
+            else if (msg == "Overlays") {
+                requestVisionAuth(id, "OVERLAY_MENU");
+            }
+            else if (msg == "Name Perms") {
+                requestVisionAuth(id, "NAME_PERMS_MENU");
+            }
+            else if (msg == "CLEAR ALL") {
+                requestVisionAuth(id, "CLEAR_ALL");
+            }
+            else if (msg == "BLACKOUT") {
+                requestVisionAuth(id, "BLACKOUT_ALL");
             }
         }
-        else if (llSubStringIndex(msg, "[OVERLAY:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gHasOverlay = !gHasOverlay;
-                if (gHasOverlay) {
-                    if (gCurrentOverlay == "" && llGetListLength(gAvailableOverlays) > 0) {
-                        // Auto-select first available overlay
-                        integer i;
-                        string overlayName;
-                        for (i = 0; i < llGetListLength(gAvailableOverlays); i++) {
-                            overlayName = llList2String(gAvailableOverlays, i);
-                            if (llGetInventoryType(overlayName) == INVENTORY_TEXTURE) {
-                                gCurrentOverlay = overlayName;
-                                jump found_overlay;
-                            }
-                        }
-                        @found_overlay;
-                    }
-                    llInstantMessage(wearer, "// Tactical overlay engaged. //");
-                } else {
-                    llInstantMessage(wearer, "// Tactical overlay disengaged. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
+        else if (gCurrentMenuContext == "OVERLAY") {
+            // Overlay menu actions
+            if (msg == "Clear Overlay") {
+                requestVisionAuth(id, "CLEAR_OVERLAY");
             }
-        }
-        else if (llSubStringIndex(msg, "[CENSOR:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsCensored = !gIsCensored;
-                if (gIsCensored) {
-                    llInstantMessage(wearer, "// IFF censor active. Non-essential personnel data redacted. //");
-                } else {
-                    llInstantMessage(wearer, "// IFF censor disabled. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
-        }
-        else if (llSubStringIndex(msg, "[BLUR:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsBlurred = !gIsBlurred;
-                if (gIsBlurred) {
-                    llInstantMessage(wearer, "// Visual processing degraded. Image clarity reduced. //");
-                } else {
-                    llInstantMessage(wearer, "// Visual processing restored. Image clarity normal. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
-        }
-        else if (msg == "FULL BLIND") {
-            if (access >= ACCESS_ADMIN) {
-                gIsBlindfolded = TRUE;
-                gHasOverlay = FALSE;
-                gIsCensored = TRUE;
-                gIsBlurred = TRUE;
-                gShowNamesBlocked = TRUE;
-                llInstantMessage(wearer, "// Full sensory deprivation (visual) engaged. //");
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "RESTORE ALL") {
-            if (access >= ACCESS_ADMIN) {
-                gIsBlindfolded = FALSE;
-                gHasOverlay = FALSE;
-                gIsCensored = FALSE;
-                gIsBlurred = FALSE;
-                gShowNamesBlocked = FALSE;
-                llInstantMessage(wearer, "// All visual systems restored to normal operation. //");
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Overlays") {
-            if (access >= ACCESS_ADMIN) {
-                openOverlayMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Name Perms") {
-            if (access >= ACCESS_ADMIN) {
-                openNamePermissionsMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Clear Overlay") {
-            if (access >= ACCESS_ADMIN) {
-                gCurrentOverlay = "";
-                gHasOverlay = FALSE;
-                llInstantMessage(id, "Visual overlay cleared.");
-                openOverlayMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Clear Whitelist") {
-            if (access >= ACCESS_ADMIN) {
-                gNameWhitelist = [];
-                llInstantMessage(id, "Name visibility whitelist cleared.");
-                openNamePermissionsMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Clear Blacklist") {
-            if (access >= ACCESS_ADMIN) {
-                gNameBlacklist = [];
-                llInstantMessage(id, "Name visibility blacklist cleared.");
-                openNamePermissionsMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Add Admin to WL") {
-            if (access >= ACCESS_ADMIN) {
-                if (llListFindList(gNameWhitelist, [id]) == -1) {
-                    gNameWhitelist += [id];
-                    llInstantMessage(id, "You have been added to the name visibility whitelist.");
-                } else {
-                    llInstantMessage(id, "You are already on the name visibility whitelist.");
-                }
-                openNamePermissionsMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else if (msg == "Show Lists") {
-            if (access >= ACCESS_ADMIN) {
-                string report = "\nName Visibility Whitelist:\n";
+            else {
+                // Check if it's an overlay selection
                 integer i;
-                if (llGetListLength(gNameWhitelist) == 0) {
-                    report += "  (empty)\n";
-                } else {
-                    for (i = 0; i < llGetListLength(gNameWhitelist) && i < 5; i++) {
-                        report += "  " + llKey2Name((key)llList2String(gNameWhitelist, i)) + "\n";
-                    }
-                    if (llGetListLength(gNameWhitelist) > 5) {
-                        report += "  ... and " + (string)(llGetListLength(gNameWhitelist) - 5) + " more\n";
-                    }
-                }
-                
-                report += "\nName Visibility Blacklist:\n";
-                if (llGetListLength(gNameBlacklist) == 0) {
-                    report += "  (empty)";
-                } else {
-                    for (i = 0; i < llGetListLength(gNameBlacklist) && i < 5; i++) {
-                        report += "  " + llKey2Name((key)llList2String(gNameBlacklist, i)) + "\n";
-                    }
-                    if (llGetListLength(gNameBlacklist) > 5) {
-                        report += "  ... and " + (string)(llGetListLength(gNameBlacklist) - 5) + " more";
-                    }
-                }
-                
-                llInstantMessage(id, report);
-                openNamePermissionsMenu(id);
-                return;
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-        }
-        else {
-            // Check if it's an overlay selection (admin only)
-            if (access >= ACCESS_ADMIN) {
-                integer i;
-                string overlayName;
-                string buttonName;
                 for (i = 0; i < llGetListLength(gAvailableOverlays); i++) {
-                    overlayName = llList2String(gAvailableOverlays, i);
-                    buttonName = overlayName;
+                    string overlayName = llList2String(gAvailableOverlays, i);
+                    string buttonName = overlayName;
                     if (llStringLength(buttonName) > 12) {
                         buttonName = llGetSubString(buttonName, 0, 11);
                     }
-                    
-                    if (msg == buttonName && llGetInventoryType(overlayName) == INVENTORY_TEXTURE) {
-                        gCurrentOverlay = overlayName;
-                        gHasOverlay = TRUE;
-                        llInstantMessage(id, "Overlay set to: " + overlayName);
-                        openOverlayMenu(id);
+                    if (msg == buttonName) {
+                        requestVisionAuth(id, "OVERLAY:" + overlayName);
                         return;
                     }
                 }
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
             }
         }
-        
-        // Apply the new restrictions after any changes
-        applyRestrictions();
-        llInstantMessage(id, "Vision protocols updated.");
-        
-        // Re-open menu to show new status
-        openControlMenu(id);
-    }
-    
-    timer() {
-        llListenRemove(gListenHandle);
-    }
-    
-    changed(integer c) {
-        if (c & CHANGED_OWNER) {
-            llResetScript();
+        else if (gCurrentMenuContext == "NAME_PERMS") {
+            // Name permissions menu actions
+            if (msg == "Clear Whitelist") {
+                requestVisionAuth(id, "CLEAR_WHITELIST");
+            }
+            else if (msg == "Clear Blacklist") {
+                requestVisionAuth(id, "CLEAR_BLACKLIST");
+            }
+            else if (msg == "Add Admin to WL") {
+                requestVisionAuth(id, "ADD_ADMIN_TO_WL");
+            }
+            else if (msg == "Show Lists") {
+                requestVisionAuth(id, "SHOW_LISTS");
+            }
         }
+    }
+
+    timer() {
+        // Clean up expired auth requests
+        cleanupAuthRequests();
+        
+        // Continue timer for next cleanup
+        llSetTimerEvent(60.0);
     }
 }
