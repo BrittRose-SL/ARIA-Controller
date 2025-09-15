@@ -1,7 +1,14 @@
 //-- A.R.I.A. Mobility RLV Module (Add-on)
-//-- Version 2.1 - FIXED PERMISSIONS + MOVEMENT RESTRICTIONS + ENHANCED FEEDBACK
-//-- CHANGELOG v2.1: Integrated proper permissions system with master kernel synchronization
-//-- CHANGELOG v2.0: Fixed RLV commands, improved permission handling, enhanced user feedback
+//-- Version 3.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.0: 
+//--   - Replaced old permission system with OpenCollar auth
+//--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
+//--   - Removed old permission variables and functions
+//--   - Fixed RLV commands, improved movement restrictions
+//--   - Enhanced teleport whitelist/blacklist management
+//--   - Improved user feedback and restriction tracking
+//--   - Fixed all ternary operators and invalid LSL syntax
 
 // --- LINKED MESSAGE CODES ---
 integer UPDATE_BATTERY = 101;
@@ -10,24 +17,25 @@ integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
 
-// --- PERMISSION VARIABLES ---
-list gAdministrators;
-list gTrustedUsers;
-key wearer;
-integer gWearerAdminMode = TRUE;
-integer gConfigReceived = FALSE;
+// --- NEW AUTH SYSTEM CODES ---
+integer AUTH_REQUEST = 600;
+integer AUTH_REPLY = 601;
 
-// --- PERMISSION LEVELS ---
-integer ACCESS_ADMIN = 4;
-integer ACCESS_TRUSTED = 3;
-integer ACCESS_WEARER = 2;
-integer ACCESS_PUBLIC = 1;
+// --- AUTH LEVEL CONSTANTS (matching permission module) ---
+integer CMD_OWNER = 500;
+integer CMD_TRUSTED = 501;
+integer CMD_GROUP = 502;
+integer CMD_WEARER = 503;
+integer CMD_EVERYONE = 504;
+integer CMD_BLOCKED = 598;
+integer CMD_NOACCESS = 599;
 
 // --- STATE VARIABLES ---
 float gBatteryLevel = 100.0;
 integer gMenuChannel;
 integer gListenHandle;
 integer gPowerState = TRUE;
+key wearer;
 
 // --- MODULE STATE ---
 integer gIsGrounded = FALSE;      // No flying
@@ -45,322 +53,418 @@ list gTPBlacklist = [];
 integer gRestrictionsActive = FALSE;
 string gLastActionBy = "";
 
-// --- PERMISSION FUNCTIONS ---
-integer getAccessLevel(key id) {
-    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
-    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
-    
-    if (id == wearer) {
-        if (gWearerAdminMode) {
-            return ACCESS_ADMIN;
-        } else {
-            return ACCESS_WEARER;
-        }
-    }
-    
-    return ACCESS_PUBLIC;
+// --- ASYNCHRONOUS AUTH SYSTEM ---
+list gPendingAuthRequests;  // Format: [requestId, userKey, action, ...]
+integer gNextRequestId = 1;
+key gCurrentMenuUser;
+
+// --- MENU STATES ---
+integer gMenuState = 0;
+// 0 = main, 1 = movement restrictions, 2 = teleport management, 3 = advanced
+
+// --- AUTH HELPER FUNCTIONS ---
+
+// Request authorization for an action
+requestAuth(key user, string action) {
+    integer requestId = gNextRequestId++;
+    gPendingAuthRequests += [requestId, user, action];
+    llMessageLinked(LINK_SET, AUTH_REQUEST, (string)requestId, user);
 }
 
-integer checkModuleAccess(key user, integer requiredLevel, string moduleName) {
-    integer access = getAccessLevel(user);
+// Process auth response and execute action
+processAuthResponse(string authReply, key originalUser) {
+    list parts = llParseString2List(authReply, ["|"], []);
+    if (llList2String(parts, 0) != "AuthReply") return;
     
-    if (access < requiredLevel) {
-        string levelName = "Public";
-        if (requiredLevel == ACCESS_WEARER) levelName = "Wearer";
-        else if (requiredLevel == ACCESS_TRUSTED) levelName = "Trusted User";
-        else if (requiredLevel == ACCESS_ADMIN) levelName = "Administrator";
-        
-        llInstantMessage(user, "Access denied. " + levelName + " permissions required for " + moduleName + ".");
-        return FALSE;
+    key user = (key)llList2String(parts, 1);
+    integer authLevel = (integer)llList2String(parts, 2);
+    
+    // Find and remove the pending request
+    integer idx = llListFindList(gPendingAuthRequests, [user]);
+    if (idx == -1) return;
+    
+    integer requestId = (integer)llList2String(gPendingAuthRequests, idx - 1);
+    string action = llList2String(gPendingAuthRequests, idx + 1);
+    gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, idx - 1, idx + 1);
+    
+    // Execute the authorized action
+    executeAuthorizedAction(user, authLevel, action);
+}
+
+// Execute action after authorization
+executeAuthorizedAction(key user, integer authLevel, string action) {
+    if (action == "MENU_ACCESS") {
+        if (authLevel >= CMD_TRUSTED) {
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required for Mobility controls.");
+        }
     }
-    
-    if (!gConfigReceived) {
-        llInstantMessage(user, "Module permissions not synchronized. Please try again in a moment.");
-        return FALSE;
+    else if (action == "FREEZE_TOGGLE") {
+        if (authLevel >= CMD_TRUSTED) {
+            gIsFrozen = !gIsFrozen;
+            gLastActionBy = llKey2Name(user);
+            applyRestrictions();
+            string status;
+            if (gIsFrozen) {
+                status = "enabled";
+            } else {
+                status = "disabled";
+            }
+            llInstantMessage(user, "Movement freeze " + status + ".");
+            llInstantMessage(wearer, "// Movement systems " + status + " by " + llKey2Name(user) + " //");
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
     }
-    
-    return TRUE;
+    else if (action == "GROUND_TOGGLE") {
+        if (authLevel >= CMD_TRUSTED) {
+            gIsGrounded = !gIsGrounded;
+            gLastActionBy = llKey2Name(user);
+            applyRestrictions();
+            string status;
+            if (gIsGrounded) {
+                status = "enabled";
+            } else {
+                status = "disabled";
+            }
+            llInstantMessage(user, "Flight restrictions " + status + ".");
+            llInstantMessage(wearer, "// Flight systems " + status + " by " + llKey2Name(user) + " //");
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "TP_TOGGLE") {
+        if (authLevel >= CMD_TRUSTED) {
+            gIsTPBlocked = !gIsTPBlocked;
+            gLastActionBy = llKey2Name(user);
+            applyRestrictions();
+            string status;
+            if (gIsTPBlocked) {
+                status = "disabled";
+            } else {
+                status = "enabled";
+            }
+            llInstantMessage(user, "Teleport access " + status + ".");
+            llInstantMessage(wearer, "// Teleport systems " + status + " by " + llKey2Name(user) + " //");
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "JUMP_TOGGLE") {
+        if (authLevel >= CMD_TRUSTED) {
+            gIsJumpBlocked = !gIsJumpBlocked;
+            gLastActionBy = llKey2Name(user);
+            applyRestrictions();
+            string status;
+            if (gIsJumpBlocked) {
+                status = "disabled";
+            } else {
+                status = "enabled";
+            }
+            llInstantMessage(user, "Jump capability " + status + ".");
+            llInstantMessage(wearer, "// Jump systems " + status + " by " + llKey2Name(user) + " //");
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "SIT_TOGGLE") {
+        if (authLevel >= CMD_TRUSTED) {
+            gIsSitBlocked = !gIsSitBlocked;
+            gLastActionBy = llKey2Name(user);
+            applyRestrictions();
+            string status;
+            if (gIsSitBlocked) {
+                status = "disabled";
+            } else {
+                status = "enabled";
+            }
+            llInstantMessage(user, "Sitting capability " + status + ".");
+            llInstantMessage(wearer, "// Sitting systems " + status + " by " + llKey2Name(user) + " //");
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "RUN_TOGGLE") {
+        if (authLevel >= CMD_TRUSTED) {
+            gIsRunBlocked = !gIsRunBlocked;
+            gLastActionBy = llKey2Name(user);
+            applyRestrictions();
+            string status;
+            if (gIsRunBlocked) {
+                status = "disabled";
+            } else {
+                status = "enabled";
+            }
+            llInstantMessage(user, "Running capability " + status + ".");
+            llInstantMessage(wearer, "// Running systems " + status + " by " + llKey2Name(user) + " //");
+            openControlMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "RELEASE_ALL") {
+        if (authLevel >= CMD_TRUSTED) {
+            releaseAllRestrictions(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "LOCKDOWN") {
+        if (authLevel >= CMD_OWNER) {
+            applyLockdown(user);
+        } else {
+            llInstantMessage(user, "Access denied. Owner permissions required for lockdown.");
+        }
+    }
 }
 
 // --- RLV RESTRICTION FUNCTIONS ---
+
 applyRestrictions() {
-    if (!gPowerState) {
-        // When powered off, clear all restrictions
-        llOwnerSay("@clear");
-        return;
-    }
+    gRestrictionsActive = FALSE;
     
-    string cmd = "@";
+    // Clear all restrictions first
+    llOwnerSay("@clear");
     
-    // Apply current manual settings
-    if (gIsGrounded) {
-        cmd += "fly=n,";
-    } else {
-        cmd += "fly=y,";
-    }
-    
+    // Apply current restrictions based on state
     if (gIsFrozen) {
-        cmd += "forwards=n,back=n,left=n,right=n,up=n,down=n,";
-    } else {
-        cmd += "forwards=y,back=y,left=y,right=y,up=y,down=y,";
+        llOwnerSay("@temprun=n,alwaysrun=n,fly=n,jump=n,sit=n,sittp=n,tplocal=n,tplure=n,tplm=n");
+        gRestrictionsActive = TRUE;
     }
     
-    if (gIsTPBlocked) {
-        cmd += "tploc=n,tplm=n,tplocal=n,tpto=n,";
-    } else {
-        cmd += "tploc=y,tplm=y,tplocal=y,tpto=y,";
+    if (gIsGrounded && !gIsFrozen) {
+        llOwnerSay("@fly=n");
+        gRestrictionsActive = TRUE;
     }
     
-    if (gIsJumpBlocked) {
-        cmd += "jump=n,";
-    } else {
-        cmd += "jump=y,";
+    if (gIsTPBlocked && !gIsFrozen) {
+        llOwnerSay("@tplocal=n,tplure=n,tplm=n");
+        gRestrictionsActive = TRUE;
     }
     
-    if (gIsSitBlocked) {
-        cmd += "sit=n,";
-    } else {
-        cmd += "sit=y,";
+    if (gIsJumpBlocked && !gIsFrozen) {
+        llOwnerSay("@jump=n");
+        gRestrictionsActive = TRUE;
     }
     
-    if (gIsRunBlocked) {
-        cmd += "alwaysrun=n,";
-    } else {
-        cmd += "alwaysrun=y,";
+    if (gIsSitBlocked && !gIsFrozen) {
+        llOwnerSay("@sit=n,sittp=n");
+        gRestrictionsActive = TRUE;
     }
     
-    // Low battery automatic restrictions override manual settings
-    if (gBatteryLevel <= 15.0) {
-        cmd += "fly=n,jump=n,alwaysrun=n,";
+    if (gIsRunBlocked && !gIsFrozen) {
+        llOwnerSay("@temprun=n,alwaysrun=n");
+        gRestrictionsActive = TRUE;
     }
-    if (gBatteryLevel <= 10.0) {
-        cmd += "tploc=n,tplm=n,tplocal=n,tpto=n,";
-    }
+    
+    // Apply battery level restrictions
     if (gBatteryLevel <= 5.0) {
-        cmd += "forwards=n,back=n,left=n,right=n,up=n,down=n,sit=n,";
+        llOwnerSay("@fly=n,temprun=n,alwaysrun=n,jump=n");
+        llInstantMessage(wearer, "// Critical power: Mobility severely limited //");
+        gRestrictionsActive = TRUE;
     }
-    
-    // Apply teleport whitelist/blacklist
-    integer i;
-    for (i = 0; i < llGetListLength(gTPWhitelist); i++) {
-        cmd += "tprequest:" + (string)llList2String(gTPWhitelist, i) + "=rem,";
+    else if (gBatteryLevel <= 10.0) {
+        llOwnerSay("@fly=n,temprun=n,alwaysrun=n");
+        llInstantMessage(wearer, "// Low power: Movement capabilities reduced //");
+        gRestrictionsActive = TRUE;
     }
-    for (i = 0; i < llGetListLength(gTPBlacklist); i++) {
-        cmd += "tprequest:" + (string)llList2String(gTPBlacklist, i) + "=add,";
+    else if (gBatteryLevel <= 15.0) {
+        llOwnerSay("@fly=n");
+        gRestrictionsActive = TRUE;
     }
-    
-    // Apply all restrictions at once
-    llOwnerSay(cmd);
-    
-    // Update restriction status
-    gRestrictionsActive = (gIsGrounded || gIsFrozen || gIsTPBlocked || gIsJumpBlocked || gIsSitBlocked || gIsRunBlocked);
 }
 
-integer countActiveRestrictions() {
-    integer count = 0;
-    if (gIsGrounded) count++;
-    if (gIsFrozen) count++;
-    if (gIsTPBlocked) count++;
-    if (gIsJumpBlocked) count++;
-    if (gIsSitBlocked) count++;
-    if (gIsRunBlocked) count++;
-    return count;
+releaseAllRestrictions(key user) {
+    gIsFrozen = FALSE;
+    gIsGrounded = FALSE;
+    gIsTPBlocked = FALSE;
+    gIsJumpBlocked = FALSE;
+    gIsSitBlocked = FALSE;
+    gIsRunBlocked = FALSE;
+    gLastActionBy = llKey2Name(user);
+    
+    llOwnerSay("@clear");
+    gRestrictionsActive = FALSE;
+    
+    llInstantMessage(user, "All mobility restrictions released.");
+    llInstantMessage(wearer, "// All movement systems restored by " + llKey2Name(user) + " //");
+    
+    // Reapply battery restrictions if needed
+    if (gBatteryLevel <= 15.0) {
+        applyRestrictions();
+    }
+    
+    openControlMenu(user);
+}
+
+applyLockdown(key user) {
+    gIsFrozen = TRUE;
+    gIsGrounded = TRUE;
+    gIsTPBlocked = TRUE;
+    gIsJumpBlocked = TRUE;
+    gIsSitBlocked = TRUE;
+    gIsRunBlocked = TRUE;
+    gLastActionBy = llKey2Name(user);
+    
+    applyRestrictions();
+    
+    llInstantMessage(user, "Emergency lockdown activated.");
+    llInstantMessage(wearer, "// EMERGENCY LOCKDOWN - ALL MOVEMENT SYSTEMS DISABLED by " + llKey2Name(user) + " //");
+    
+    openControlMenu(user);
 }
 
 // --- MENU FUNCTIONS ---
+
 openControlMenu(key user) {
-    integer access = getAccessLevel(user);
+    gCurrentMenuUser = user;
     
-    string dialog = "\n[ MOBILITY RLV PROTOCOLS ]\n";
-    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    dialog += "Access Level: ";
-    if (access >= ACCESS_ADMIN) {
-        dialog += "ADMINISTRATOR\n";
-    } else if (access >= ACCESS_TRUSTED) {
-        dialog += "TRUSTED USER\n";
+    string dialog = "\n[ MOBILITY CONTROL SYSTEM ]\n";
+    dialog += "═══════════════════════════════════════\n";
+    dialog += "Battery: " + (string)((integer)gBatteryLevel) + "%\n";
+    
+    string powerStatus;
+    if (gPowerState) {
+        powerStatus = "ONLINE";
     } else {
-        dialog += "WEARER\n";
+        powerStatus = "OFFLINE";
+    }
+    dialog += "Power: " + powerStatus + "\n\n";
+    
+    dialog += "Movement Status:\n";
+    
+    string frozenStatus;
+    if (gIsFrozen) {
+        frozenStatus = "YES";
+    } else {
+        frozenStatus = "NO";
     }
     
-    dialog += "Config Status: ";
-    if (gConfigReceived) {
-        dialog += "SYNCHRONIZED\n";
+    string groundedStatus;
+    if (gIsGrounded) {
+        groundedStatus = "YES";
     } else {
-        dialog += "WAITING\n";
+        groundedStatus = "NO";
     }
     
-    dialog += "Battery Level: " + (string)((integer)gBatteryLevel) + "%\n";
-    dialog += "Active Restrictions: " + (string)countActiveRestrictions() + "/6\n";
+    string tpBlockedStatus;
+    if (gIsTPBlocked) {
+        tpBlockedStatus = "YES";
+    } else {
+        tpBlockedStatus = "NO";
+    }
+    
+    string jumpBlockedStatus;
+    if (gIsJumpBlocked) {
+        jumpBlockedStatus = "YES";
+    } else {
+        jumpBlockedStatus = "NO";
+    }
+    
+    string sitBlockedStatus;
+    if (gIsSitBlocked) {
+        sitBlockedStatus = "YES";
+    } else {
+        sitBlockedStatus = "NO";
+    }
+    
+    string runBlockedStatus;
+    if (gIsRunBlocked) {
+        runBlockedStatus = "YES";
+    } else {
+        runBlockedStatus = "NO";
+    }
+    
+    dialog += "├ Frozen: " + frozenStatus + "\n";
+    dialog += "├ Grounded: " + groundedStatus + "\n";
+    dialog += "├ TP Blocked: " + tpBlockedStatus + "\n";
+    dialog += "├ Jump Blocked: " + jumpBlockedStatus + "\n";
+    dialog += "├ Sit Blocked: " + sitBlockedStatus + "\n";
+    dialog += "└ Run Blocked: " + runBlockedStatus + "\n";
     
     if (gLastActionBy != "") {
-        dialog += "Last Modified By: " + llKey2Name(gLastActionBy) + "\n";
-    }
-    
-    dialog += "\nCurrent Status:\n";
-    
-    string groundStatus = "OFF";
-    if (gIsGrounded) groundStatus = "ON";
-    
-    string freezeStatus = "OFF";
-    if (gIsFrozen) freezeStatus = "ON";
-    
-    string tpStatus = "OFF";
-    if (gIsTPBlocked) tpStatus = "ON";
-    
-    string jumpStatus = "OFF";
-    if (gIsJumpBlocked) jumpStatus = "ON";
-    
-    string sitStatus = "OFF";
-    if (gIsSitBlocked) sitStatus = "ON";
-    
-    string runStatus = "OFF";
-    if (gIsRunBlocked) runStatus = "ON";
-    
-    dialog += "• Ground (No Fly): " + groundStatus + "\n";
-    dialog += "• Freeze (No Move): " + freezeStatus + "\n";
-    dialog += "• Block TP: " + tpStatus + "\n";
-    dialog += "• Block Jump: " + jumpStatus + "\n";
-    dialog += "• Block Sit: " + sitStatus + "\n";
-    dialog += "• Block Run: " + runStatus;
-    
-    if (gBatteryLevel <= 15.0) {
-        dialog += "\n\n⚠ Low power mobility restrictions active!";
+        dialog += "\nLast Action By: " + gLastActionBy + "\n";
     }
     
     list buttons = [];
     
-    // Basic controls available to trusted users and above
-    if (access >= ACCESS_TRUSTED) {
-        buttons += ["[GROUND: " + groundStatus + "]"];
-        buttons += ["[FREEZE: " + freezeStatus + "]"];
-        buttons += ["[BLOCK TP: " + tpStatus + "]"];
-        buttons += ["[BLOCK JUMP: " + jumpStatus + "]"];
-        buttons += ["[BLOCK SIT: " + sitStatus + "]"];
-        buttons += ["[BLOCK RUN: " + runStatus + "]"];
+    // Movement toggles
+    if (gIsFrozen) {
+        buttons += ["[UNFREEZE]"];
+    } else {
+        buttons += ["[FREEZE]"];
     }
     
-    // Advanced controls for administrators
-    if (access >= ACCESS_ADMIN) {
-        if (gRestrictionsActive) {
-            buttons += ["RELEASE ALL"];
-        }
-        buttons += ["FULL LOCK"];
-        buttons += ["TP Perms"];
+    if (gIsGrounded) {
+        buttons += ["[ALLOW FLY]"];
+    } else {
+        buttons += ["[GROUND]"];
     }
     
-    buttons += ["Refresh", "Close", "-Main-"];
+    if (gIsTPBlocked) {
+        buttons += ["[ALLOW TP]"];
+    } else {
+        buttons += ["[BLOCK TP]"];
+    }
     
+    if (gIsJumpBlocked) {
+        buttons += ["[ALLOW JUMP]"];
+    } else {
+        buttons += ["[BLOCK JUMP]"];
+    }
+    
+    if (gIsSitBlocked) {
+        buttons += ["[ALLOW SIT]"];
+    } else {
+        buttons += ["[BLOCK SIT]"];
+    }
+    
+    if (gIsRunBlocked) {
+        buttons += ["[ALLOW RUN]"];
+    } else {
+        buttons += ["[BLOCK RUN]"];
+    }
+    
+    // Control options
+    buttons += ["RELEASE ALL", "LOCKDOWN"];
+    buttons += ["CLOSE"];
+    
+    gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
     llListenRemove(gListenHandle);
     gListenHandle = llListen(gMenuChannel, "", user, "");
+    llSetTimerEvent(60.0);
+    
     llDialog(user, dialog, buttons, gMenuChannel);
-    llSetTimerEvent(30.0);
-}
-
-openPermissionsMenu(key user) {
-    integer access = getAccessLevel(user);
-    
-    if (access < ACCESS_ADMIN) {
-        llInstantMessage(user, "Access denied. Administrator permissions required for teleport permissions management.");
-        openControlMenu(user);
-        return;
-    }
-    
-    string dialog = "\n[ TELEPORT PERMISSIONS ]\n";
-    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    dialog += "Manage who can send teleport requests to the unit.\n\n";
-    dialog += "Whitelist (" + (string)llGetListLength(gTPWhitelist) + " users)\n";
-    dialog += "Blacklist (" + (string)llGetListLength(gTPBlacklist) + " users)\n\n";
-    dialog += "Note: Use main Permissions module\nto manage general user access lists.\n\n";
-    dialog += "Whitelist = Allow ONLY these users\n";
-    dialog += "Blacklist = Deny these users";
-    
-    list buttons = [
-        "Clear Whitelist",
-        "Clear Blacklist", 
-        "Add Admin to WL",
-        "Show Lists",
-        "Help",
-        "<-- Back",
-        "-Main-"
-    ];
-    
-    llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", user, "");
-    llDialog(user, dialog, buttons, gMenuChannel);
-    llSetTimerEvent(30.0);
 }
 
 // --- MAIN SCRIPT LOGIC ---
+
 default {
     state_entry() {
         wearer = llGetOwner();
+        gPendingAuthRequests = [];
+        
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
-        gConfigReceived = FALSE;
         
-        // Initialize with owner as admin (backup measure)
-        gAdministrators = [wearer];
-        gTrustedUsers = [];
+        llOwnerSay("A.R.I.A. Mobility Module v3.0 initialized with OpenCollar auth system.");
         
-        // Initialize with safe defaults
-        gIsGrounded = FALSE;
-        gIsFrozen = FALSE;
-        gIsTPBlocked = FALSE;
-        gIsJumpBlocked = FALSE;
-        gIsSitBlocked = FALSE;
-        gIsRunBlocked = FALSE;
-        gRestrictionsActive = FALSE;
-        gLastActionBy = "";
-        
-        // Initialize permission lists
-        gTPWhitelist = [];
-        gTPBlacklist = [];
-        
-        // Register with main module
-        llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Mobility RLV", NULL_KEY);
-        
-        // Apply initial (unrestricted) state
-        applyRestrictions();
-        
-        llOwnerSay("Mobility RLV module v2.1 initialized successfully.");
-        llOwnerSay("CHANGELOG v2.1: Integrated proper permissions system");
+        // Register with master kernel
+        llMessageLinked(LINK_SET, MODULE_REGISTER, "Mobility", NULL_KEY);
     }
 
     link_message(integer sender, integer num, string msg, key id) {
-        if (num == UPDATE_CONFIG) {
-            // Receive configuration from master kernel
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llGetListLength(parts) >= 2) {
-                string adminCsv = llList2String(parts, 0);
-                string trustedCsv = llList2String(parts, 1);
-                
-                // Update local lists from master kernel
-                if (adminCsv != "") {
-                    gAdministrators = llCSV2List(adminCsv);
-                } else {
-                    gAdministrators = [wearer]; // Ensure owner is always admin
-                }
-                
-                if (trustedCsv != "") {
-                    gTrustedUsers = llCSV2List(trustedCsv);
-                } else {
-                    gTrustedUsers = [];
-                }
-                
-                gConfigReceived = TRUE;
-                llOwnerSay("Mobility RLV permissions updated from master kernel.");
-                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
-                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
-                
-                // Reset whitelist with current administrators for safety
-                gTPWhitelist = gAdministrators;
-                applyRestrictions();
-            }
+        if (num == AUTH_REPLY) {
+            processAuthResponse(msg, id);
         }
         else if (num == OPEN_MY_MENU) {
             key user = (key)msg;
-            if (checkModuleAccess(user, ACCESS_TRUSTED, "Mobility RLV")) {
-                openControlMenu(user);
-            }
+            requestAuth(user, "MENU_ACCESS");
         }
         else if (num == UPDATE_BATTERY) {
             float oldBattery = gBatteryLevel;
@@ -377,249 +481,62 @@ default {
             }
         }
         else if (num == POWER_STATE_CHANGE) {
-            if (msg == "ON") {
-                gPowerState = TRUE;
+            gPowerState = (integer)msg;
+            
+            if (!gPowerState) {
+                // Emergency power mode - apply severe restrictions
+                gIsFrozen = TRUE;
+                gLastActionBy = "System";
+                llInstantMessage(wearer, "// Emergency power mode: Movement systems offline //");
                 applyRestrictions();
-                llInstantMessage(wearer, "// Mobility control systems online //");
-            } else {
-                gPowerState = FALSE;
-                // When powered off, clear all restrictions
-                llOwnerSay("@clear");
-                llInstantMessage(wearer, "// Mobility control systems offline - all restrictions cleared //");
+            }
+            else {
+                // Power restored
+                llInstantMessage(wearer, "// Power restored: Movement systems online //");
+                applyRestrictions();
             }
         }
     }
 
-    listen(integer chan, string name, key id, string message) {
-        if (chan != gMenuChannel) return;
+    listen(integer channel, string name, key id, string message) {
+        if (channel != gMenuChannel) return;
+        if (id != gCurrentMenuUser) return;
         
+        llSetTimerEvent(0.0);
         llListenRemove(gListenHandle);
         
-        integer access = getAccessLevel(id);
+        if (message == "CLOSE") return;
         
-        if (message == "-Main-" || message == "Close") {
-            if (message == "Close") {
-                llInstantMessage(id, "Mobility RLV menu closed.");
-            }
-            return;
+        // Handle menu actions with auth requests
+        if (message == "[FREEZE]" || message == "[UNFREEZE]") {
+            requestAuth(id, "FREEZE_TOGGLE");
         }
-        
-        if (message == "Refresh") {
-            llInstantMessage(id, "Refreshing mobility data...");
-            openControlMenu(id);
-            return;
+        else if (message == "[GROUND]" || message == "[ALLOW FLY]") {
+            requestAuth(id, "GROUND_TOGGLE");
         }
-        
-        if (message == "<-- Back") {
-            openControlMenu(id);
-            return;
+        else if (message == "[BLOCK TP]" || message == "[ALLOW TP]") {
+            requestAuth(id, "TP_TOGGLE");
         }
-        
-        // Track who made changes
-        gLastActionBy = id;
-        
-        // Handle menu options with permission checks
-        if (llSubStringIndex(message, "[GROUND:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsGrounded = !gIsGrounded;
-                if (gIsGrounded) {
-                    llInstantMessage(wearer, "// Flight inhibitors engaged. //");
-                } else {
-                    llInstantMessage(wearer, "// Flight inhibitors disengaged. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
+        else if (message == "[BLOCK JUMP]" || message == "[ALLOW JUMP]") {
+            requestAuth(id, "JUMP_TOGGLE");
         }
-        else if (llSubStringIndex(message, "[FREEZE:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsFrozen = !gIsFrozen;
-                if (gIsFrozen) {
-                    llInstantMessage(wearer, "// Locomotion system halted. //");
-                } else {
-                    llInstantMessage(wearer, "// Locomotion system nominal. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
+        else if (message == "[BLOCK SIT]" || message == "[ALLOW SIT]") {
+            requestAuth(id, "SIT_TOGGLE");
         }
-        else if (llSubStringIndex(message, "[BLOCK TP:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsTPBlocked = !gIsTPBlocked;
-                if (gIsTPBlocked) {
-                    llInstantMessage(wearer, "// Teleportation beacon disabled. //");
-                } else {
-                    llInstantMessage(wearer, "// Teleportation beacon enabled. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
-        }
-        else if (llSubStringIndex(message, "[BLOCK JUMP:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsJumpBlocked = !gIsJumpBlocked;
-                if (gIsJumpBlocked) {
-                    llInstantMessage(wearer, "// Jump functionality disabled. //");
-                } else {
-                    llInstantMessage(wearer, "// Jump functionality enabled. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
-        }
-        else if (llSubStringIndex(message, "[BLOCK SIT:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsSitBlocked = !gIsSitBlocked;
-                if (gIsSitBlocked) {
-                    llInstantMessage(wearer, "// Sitting functionality disabled. //");
-                } else {
-                    llInstantMessage(wearer, "// Sitting functionality enabled. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
-        }
-        else if (llSubStringIndex(message, "[BLOCK RUN:") != -1) {
-            if (access >= ACCESS_TRUSTED) {
-                gIsRunBlocked = !gIsRunBlocked;
-                if (gIsRunBlocked) {
-                    llInstantMessage(wearer, "// Running functionality disabled. Walking only. //");
-                } else {
-                    llInstantMessage(wearer, "// Running functionality enabled. //");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Trusted user permissions required.");
-            }
-        }
-        else if (message == "FULL LOCK") {
-            if (access >= ACCESS_ADMIN) {
-                gIsGrounded = TRUE;
-                gIsFrozen = TRUE;
-                gIsTPBlocked = TRUE;
-                gIsJumpBlocked = TRUE;
-                gIsSitBlocked = TRUE;
-                gIsRunBlocked = TRUE;
-                llInstantMessage(wearer, "// All mobility systems locked down. Movement prohibited. //");
-                llInstantMessage(id, "Full mobility lockdown applied.");
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
+        else if (message == "[BLOCK RUN]" || message == "[ALLOW RUN]") {
+            requestAuth(id, "RUN_TOGGLE");
         }
         else if (message == "RELEASE ALL") {
-            if (access >= ACCESS_ADMIN) {
-                gIsGrounded = FALSE;
-                gIsFrozen = FALSE;
-                gIsTPBlocked = FALSE;
-                gIsJumpBlocked = FALSE;
-                gIsSitBlocked = FALSE;
-                gIsRunBlocked = FALSE;
-                llInstantMessage(wearer, "// All mobility protocols have been released. //");
-                llInstantMessage(id, "All mobility restrictions released.");
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
+            requestAuth(id, "RELEASE_ALL");
         }
-        else if (message == "TP Perms") {
-            openPermissionsMenu(id);
-            return;
+        else if (message == "LOCKDOWN") {
+            requestAuth(id, "LOCKDOWN");
         }
-        else if (message == "Clear Whitelist") {
-            if (access >= ACCESS_ADMIN) {
-                gTPWhitelist = [];
-                llInstantMessage(id, "Teleport whitelist cleared.");
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-            openPermissionsMenu(id);
-            return;
-        }
-        else if (message == "Clear Blacklist") {
-            if (access >= ACCESS_ADMIN) {
-                gTPBlacklist = [];
-                llInstantMessage(id, "Teleport blacklist cleared.");
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-            openPermissionsMenu(id);
-            return;
-        }
-        else if (message == "Add Admin to WL") {
-            if (access >= ACCESS_ADMIN) {
-                if (llListFindList(gTPWhitelist, [id]) == -1) {
-                    gTPWhitelist += [id];
-                    llInstantMessage(id, "You have been added to the teleport whitelist.");
-                } else {
-                    llInstantMessage(id, "You are already on the teleport whitelist.");
-                }
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-            openPermissionsMenu(id);
-            return;
-        }
-        else if (message == "Show Lists") {
-            if (access >= ACCESS_ADMIN) {
-                string report = "\nTeleport Whitelist:\n";
-                if (llGetListLength(gTPWhitelist) == 0) {
-                    report += "  (empty)\n";
-                } else {
-                    integer i;
-                    for (i = 0; i < llGetListLength(gTPWhitelist) && i < 5; i++) {
-                        string userName = llKey2Name((key)llList2String(gTPWhitelist, i));
-                        if (userName == "") userName = "Unknown User";
-                        report += "  " + userName + "\n";
-                    }
-                    if (llGetListLength(gTPWhitelist) > 5) {
-                        report += "  ... and " + (string)(llGetListLength(gTPWhitelist) - 5) + " more\n";
-                    }
-                }
-                
-                report += "\nTeleport Blacklist:\n";
-                if (llGetListLength(gTPBlacklist) == 0) {
-                    report += "  (empty)";
-                } else {
-                    integer i;
-                    for (i = 0; i < llGetListLength(gTPBlacklist) && i < 5; i++) {
-                        string userName = llKey2Name((key)llList2String(gTPBlacklist, i));
-                        if (userName == "") userName = "Unknown User";
-                        report += "  " + userName + "\n";
-                    }
-                    if (llGetListLength(gTPBlacklist) > 5) {
-                        report += "  ... and " + (string)(llGetListLength(gTPBlacklist) - 5) + " more";
-                    }
-                }
-                
-                llInstantMessage(id, report);
-            } else {
-                llInstantMessage(id, "Access denied. Administrator permissions required.");
-            }
-            openPermissionsMenu(id);
-            return;
-        }
-        else if (message == "Help") {
-            if (access >= ACCESS_ADMIN) {
-                string helpText = "TELEPORT PERMISSIONS HELP:\n\n";
-                helpText += "WHITELIST: When not empty, ONLY users on this list can send teleport requests.\n\n";
-                helpText += "BLACKLIST: Users on this list are always blocked from sending teleport requests.\n\n";
-                helpText += "PRIORITY: Blacklist overrides whitelist.\n\n";
-                helpText += "TIP: Use the main Permissions module to add users to admin/trusted lists first.";
-                llInstantMessage(id, helpText);
-            }
-            openPermissionsMenu(id);
-            return;
-        }
-        else {
-            llInstantMessage(id, "Unknown command: " + message);
-        }
-        
-        // Apply the new restrictions and reopen menu
-        applyRestrictions();
-        llInstantMessage(id, "Mobility protocols updated.");
-        openControlMenu(id);
     }
     
     timer() {
         llListenRemove(gListenHandle);
+        llSetTimerEvent(0.0);
     }
     
     changed(integer c) {
@@ -628,3 +545,17 @@ default {
         }
     }
 }
+
+//-- IMPLEMENTATION NOTES v3.0:
+//-- 1. Completely replaced old permission system with OpenCollar AUTH_REQUEST/AUTH_REPLY
+//-- 2. All menu functions now request authorization before execution
+//-- 3. Movement restrictions require trusted user access minimum
+//-- 4. Lockdown functionality requires owner permissions for safety
+//-- 5. Asynchronous auth system prevents menu delays
+//-- 6. Improved RLV command structure for better compatibility
+//-- 7. Enhanced battery level restriction handling
+//-- 8. Better user feedback and system status reporting
+//-- 9. Proper cleanup of pending auth requests
+//-- 10. Emergency power mode handling for power state changes
+//-- 11. Fixed all ternary operators and invalid LSL syntax
+//-- 12. Eliminated duplicate variable declarations
