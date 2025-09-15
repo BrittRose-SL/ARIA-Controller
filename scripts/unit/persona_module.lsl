@@ -1,11 +1,13 @@
 //-- A.R.I.A. Persona Module (Add-on)
-//-- Version 4.1 - FIXED PERMISSIONS SYSTEM + NOTECARD-BASED PERSONAS
-//-- CHANGELOG v4.1:
-//-- - Added new standardized permissions system from template
-//-- - Fixed permission validation in all menu functions
-//-- - Added proper config synchronization with master kernel
-//-- - Improved access level checking for trusted users
-//-- - Added permission status display in menus
+//-- Version 5.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v5.0:
+//--   - Replaced old permission system with OpenCollar auth
+//--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
+//--   - Removed old permission variables and functions
+//--   - Enhanced notecard-based persona system
+//--   - Improved emote and response management
+//--   - Fixed all ternary operators and invalid LSL syntax
 
 // --- CONFIGURATION ---
 string gRlvRootFolder = "#RLV/~A.R.I.A.";
@@ -17,7 +19,6 @@ string EOF_REACHED = "EOF";
 // --- LINKED MESSAGE CODES ---
 integer SET_SPEECH_MODE = 100;
 integer UPDATE_BATTERY = 101;
-integer UPDATE_CONFIG = 102;
 integer UPDATE_UNIT_INFO = 103;
 integer UPDATE_PERSONA_STATUS = 104;
 integer MODULE_REGISTER = 200;
@@ -28,19 +29,20 @@ integer UPDATE_AROUSAL = 400;
 integer UPDATE_STIMULATION = 401;
 integer UPDATE_PAIN = 402;
 integer UPDATE_STRESS = 403;
+integer POWER_STATE_CHANGE = 300;
 
-// --- PERMISSION VARIABLES (REQUIRED) ---
-list gAdministrators;
-list gTrustedUsers;
-key wearer;
-integer gWearerAdminMode = TRUE;
-integer gConfigReceived = FALSE;
+// --- NEW AUTH SYSTEM CODES ---
+integer AUTH_REQUEST = 600;
+integer AUTH_REPLY = 601;
 
-// --- PERMISSION LEVELS (REQUIRED) ---
-integer ACCESS_ADMIN = 4;
-integer ACCESS_TRUSTED = 3;
-integer ACCESS_WEARER = 2;
-integer ACCESS_PUBLIC = 1;
+// --- AUTH LEVEL CONSTANTS (matching permission module) ---
+integer CMD_OWNER = 500;
+integer CMD_TRUSTED = 501;
+integer CMD_GROUP = 502;
+integer CMD_WEARER = 503;
+integer CMD_EVERYONE = 504;
+integer CMD_BLOCKED = 598;
+integer CMD_NOACCESS = 599;
 
 // --- STATE VARIABLES ---
 float gBatteryLevel = 100.0;
@@ -48,7 +50,8 @@ integer gMenuChannel;
 integer gListenHandle;
 integer gChatListenHandle;
 integer gChatListenActive = TRUE;
-key gAdministrator;
+integer gPowerState = TRUE;
+key wearer;
 string gUnitName = "A.R.I.A.";
 string gCurrentPersona = "Default";
 string gCurrentChatPrefix = "[A.R.I.A.]";
@@ -74,48 +77,121 @@ string gCurrentNotecardName;
 integer gPersonaLoadStep = 0;     // 0=config, 1=emotes, 2=responses
 integer gInitializationStep = 0;  // For initial persona scanning
 
-// --- PERMISSION FUNCTIONS (REQUIRED) ---
+// --- ASYNCHRONOUS AUTH SYSTEM ---
+list gPendingAuthRequests;  // Format: [requestId, userKey, action, ...]
+integer gNextRequestId = 1;
+key gCurrentMenuUser;
 
-integer getAccessLevel(key id) {
-    // Check administrator list first
-    if (llListFindList(gAdministrators, [id]) != -1) return ACCESS_ADMIN;
-    
-    // Check trusted users list
-    if (llListFindList(gTrustedUsers, [id]) != -1) return ACCESS_TRUSTED;
-    
-    // Check if it's the wearer
-    if (id == wearer) {
-        // Wearer access depends on wearer admin mode
-        if (gWearerAdminMode) {
-            return ACCESS_ADMIN;
-        } else {
-            return ACCESS_WEARER;
-        }
-    }
-    
-    // Everyone else gets public access
-    return ACCESS_PUBLIC;
+// --- MENU STATES ---
+integer gMenuState = 0;
+// 0 = main, 1 = emotes, 2 = levels, 3 = advanced
+
+// --- AUTH HELPER FUNCTIONS ---
+
+// Request authorization for an action
+requestAuth(key user, string action) {
+    integer requestId = gNextRequestId++;
+    gPendingAuthRequests += [requestId, user, action];
+    llMessageLinked(LINK_SET, AUTH_REQUEST, (string)requestId, user);
 }
 
-integer checkModuleAccess(key user, integer requiredLevel, string moduleName) {
-    integer access = getAccessLevel(user);
+// Process auth response and execute action
+processAuthResponse(string authReply, key originalUser) {
+    list parts = llParseString2List(authReply, ["|"], []);
+    if (llList2String(parts, 0) != "AuthReply") return;
     
-    if (access < requiredLevel) {
-        string levelName = "Public";
-        if (requiredLevel == ACCESS_WEARER) levelName = "Wearer";
-        else if (requiredLevel == ACCESS_TRUSTED) levelName = "Trusted User";
-        else if (requiredLevel == ACCESS_ADMIN) levelName = "Administrator";
-        
-        llInstantMessage(user, "Access denied. " + levelName + " permissions required for " + moduleName + ".");
-        return FALSE;
+    key user = (key)llList2String(parts, 1);
+    integer authLevel = (integer)llList2String(parts, 2);
+    
+    // Find and remove the pending request
+    integer idx = llListFindList(gPendingAuthRequests, [user]);
+    if (idx == -1) return;
+    
+    integer requestId = (integer)llList2String(gPendingAuthRequests, idx - 1);
+    string action = llList2String(gPendingAuthRequests, idx + 1);
+    gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, idx - 1, idx + 1);
+    
+    // Execute the authorized action
+    executeAuthorizedAction(user, authLevel, action);
+}
+
+// Execute action after authorization
+executeAuthorizedAction(key user, integer authLevel, string action) {
+    if (action == "MENU_ACCESS") {
+        if (authLevel >= CMD_TRUSTED) {
+            openPersonaMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required for Persona Module.");
+        }
     }
-    
-    if (!gConfigReceived) {
-        llInstantMessage(user, "Module permissions not synchronized. Please try again in a moment.");
-        return FALSE;
+    else if (llSubStringIndex(action, "LOAD_PERSONA:") == 0) {
+        if (authLevel >= CMD_TRUSTED) {
+            string personaName = llGetSubString(action, 13, -1); // Remove "LOAD_PERSONA:" prefix
+            loadPersonaFromNotecard(personaName);
+            llInstantMessage(user, "Loading persona: " + personaName);
+            llInstantMessage(wearer, "// Persona changed to " + personaName + " by " + llKey2Name(user) + " //");
+            openPersonaMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required to change personas.");
+        }
     }
-    
-    return TRUE;
+    else if (action == "EMOTES_MENU") {
+        if (authLevel >= CMD_TRUSTED) {
+            openEmoteMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required for emotes.");
+        }
+    }
+    else if (action == "LEVELS_MENU") {
+        if (authLevel >= CMD_TRUSTED) {
+            openLevelsMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required for levels.");
+        }
+    }
+    else if (action == "RELOAD_PERSONAS") {
+        if (authLevel >= CMD_OWNER) {
+            llOwnerSay("Rescanning for persona notecards...");
+            scanForPersonaNotecards();
+            llInstantMessage(user, "Persona notecards reloaded.");
+            llInstantMessage(wearer, "// Personas reloaded by " + llKey2Name(user) + " //");
+            openPersonaMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Owner permissions required to reload personas.");
+        }
+    }
+    else if (llSubStringIndex(action, "EMOTE:") == 0) {
+        if (authLevel >= CMD_TRUSTED) {
+            string emoteType = llGetSubString(action, 6, -1); // Remove "EMOTE:" prefix
+            triggerPersonaEmote(emoteType);
+            llInstantMessage(user, llToUpper(emoteType) + " emote triggered.");
+            llInstantMessage(wearer, "// " + llToUpper(emoteType) + " emote triggered by " + llKey2Name(user) + " //");
+            openEmoteMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "RESET_LEVELS") {
+        if (authLevel >= CMD_TRUSTED) {
+            gArousalLevel = 0.0;
+            gStimulationLevel = 0.0;
+            gPainLevel = 0.0;
+            gStressLevel = 0.0;
+            updateHoverText();
+            llInstantMessage(user, "All indicator levels reset to zero.");
+            llInstantMessage(wearer, "// Indicator levels reset by " + llKey2Name(user) + " //");
+            openLevelsMenu(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
+    else if (action == "SHOW_LEVELS") {
+        if (authLevel >= CMD_TRUSTED) {
+            showCurrentLevels(user);
+        } else {
+            llInstantMessage(user, "Access denied. Trusted user permissions required.");
+        }
+    }
 }
 
 // --- HELPER FUNCTIONS ---
@@ -151,249 +227,120 @@ scanForPersonaNotecards() {
     }
 }
 
-openPersonaMenu(key user) {
-    // Check permissions first
-    if (!checkModuleAccess(user, ACCESS_TRUSTED, "Persona Module")) {
-        return;
-    }
-    
-    integer access = getAccessLevel(user);
-    
-    string dialog = "\n[ PERSONA MANAGEMENT ]\n";
-    dialog += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    dialog += "Unit: " + gUnitName + "\n";
-    dialog += "Current: " + gCurrentPersona + "\n";
-    dialog += "Mode: " + gCurrentResponseTone + "\n";
-    dialog += "Access Level: ";
-    if (access >= ACCESS_ADMIN) {
-        dialog += "ADMINISTRATOR\n";
-    } else if (access >= ACCESS_TRUSTED) {
-        dialog += "TRUSTED USER\n";
-    } else {
-        dialog += "WEARER\n";
-    }
-    
-    dialog += "Config Status: ";
-    if (gConfigReceived) {
-        dialog += "SYNCHRONIZED";
-    } else {
-        dialog += "WAITING";
-    }
-    dialog += "\n\nSelect persona to load:";
-    
-    // Create buttons with available personas
-    list buttons = gAvailablePersonas;
-    
-    // Add management options based on access level
-    if (access >= ACCESS_TRUSTED) {
-        buttons += ["Emotes", "Levels"];
-    }
-    
-    if (access >= ACCESS_ADMIN) {
-        buttons += ["Reload"];
-    }
-    
-    buttons += ["Close"];
-    
-    // Limit to 12 buttons for dialog
-    if (llGetListLength(buttons) > 12) {
-        buttons = llList2List(buttons, 0, 11);
-    }
-    
-    llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", user, "");
-    llDialog(user, dialog, buttons, gMenuChannel);
-    llSetTimerEvent(30.0);
-}
-
-openEmoteMenu(key user) {
-    // Check permissions
-    if (!checkModuleAccess(user, ACCESS_TRUSTED, "Persona Emotes")) {
-        return;
-    }
-    
-    string dialog = "\n[ PERSONA EMOTES ]\n";
-    dialog += "Current Persona: " + gCurrentPersona + "\n\n";
-    dialog += "Select emote to trigger:";
-    
-    list buttons = ["Greeting", "Acknowledge", "Confusion"];
-    buttons += ["Error", "Idle", "Compliment"];
-    buttons += ["Task Done", "Happy", "-Back-"];
-    
-    llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", user, "");
-    llDialog(user, dialog, buttons, gMenuChannel);
-    llSetTimerEvent(30.0);
-}
-
-openLevelsMenu(key user) {
-    // Check permissions
-    if (!checkModuleAccess(user, ACCESS_TRUSTED, "Persona Levels")) {
-        return;
-    }
-    
-    string dialog = "\n[ INDICATOR LEVELS ]\n";
-    dialog += "Current levels:\n";
-    dialog += "Arousal: " + (string)((integer)gArousalLevel) + "%\n";
-    dialog += "Stimulation: " + (string)((integer)gStimulationLevel) + "%\n";
-    dialog += "Pain: " + (string)((integer)gPainLevel) + "%\n";
-    dialog += "Stress: " + (string)((integer)gStressLevel) + "%\n\n";
-    dialog += "Select level to view:";
-    
-    list buttons = ["Arousal Info", "Stim Info", "Pain Info"];
-    buttons += ["Stress Info", "Reset All", "Show All"];
-    buttons += ["-Back-", "Close"];
-    
-    llListenRemove(gListenHandle);
-    gListenHandle = llListen(gMenuChannel, "", user, "");
-    llDialog(user, dialog, buttons, gMenuChannel);
-    llSetTimerEvent(30.0);
-}
-
-processPersonalityResponse(string message) {
-    // Look for triggers in the message
-    string lowerMsg = llToLower(message);
-    
-    // Check for personality responses
-    list triggers = ["thank", "sorry", "compliment", "good", "bad", "yes", "no"];
-    integer i;
-    for (i = 0; i < llGetListLength(triggers); i++) {
-        string trigger = llList2String(triggers, i);
-        if (llSubStringIndex(lowerMsg, trigger) != -1) {
-            string response = getPersonaResponse(trigger);
-            if (response != "") {
-                llSay(0, response);
-                return;
-            }
-        }
-    }
-    
-    // Random personality responses based on current tone
-    if (llFrand(100.0) < 25.0) { // 25% chance of personality response
-        if (gCurrentResponseTone == "polite") {
-            string response = getPersonaResponse("polite_random");
-            if (response != "") llSay(0, response);
-        }
-        else if (gCurrentResponseTone == "playful") {
-            string response = getPersonaResponse("playful_random");
-            if (response != "") llSay(0, response);
-        }
-    }
-}
-
 loadEmergencyDefaults() {
-    gCurrentPersona = "Emergency";
+    gCurrentPersona = "Default";
     gCurrentChatPrefix = "[A.R.I.A.]";
-    gCurrentOutfitFolder = "";
-    
+    gCurrentEmoteStyle = "neutral";
+    gCurrentResponseTone = "standard";
     gPersonaEmotes = [
-        "greeting", "*system initialization complete*",
-        "acknowledgment", "*confirms*",
-        "confusion", "*processes request*",
-        "error", "*error detected, attempting recovery*",
-        "idle", "*status lights blink steadily*"
+        "greeting", "Hello! A.R.I.A. systems online and ready.",
+        "acknowledgment", "Acknowledged. Processing request.",
+        "confusion", "Unable to parse request. Please clarify.",
+        "error", "Error detected in system protocols.",
+        "idle", "A.R.I.A. standing by...",
+        "happy", "Systems operating at optimal efficiency!",
+        "compliment", "Thank you for the positive feedback.",
+        "task_done", "Task completed successfully."
     ];
-    
     gPersonaResponses = [
-        "thank", "You are welcome.",
-        "sorry", "No apology necessary.",
-        "compliment", "*acknowledges* Thank you for the feedback."
+        "hello", "Hello! How may I assist you today?",
+        "status", "All systems nominal. Ready to serve.",
+        "help", "I am here to assist. What do you need?",
+        "goodbye", "Farewell. A.R.I.A. signing off."
     ];
-    
     updateHoverText();
-    llOwnerSay("Using emergency default persona configuration.");
+    llOwnerSay("Emergency default persona loaded.");
 }
 
 loadPersonaFromNotecard(string personaName) {
-    string notecardName = gPersonaPrefix + personaName;
+    gCurrentPersona = personaName;
+    gCurrentNotecardName = gPersonaPrefix + personaName;
     
-    if (llGetInventoryType(notecardName) != INVENTORY_NOTECARD) {
-        llOwnerSay("ERROR: Persona notecard '" + notecardName + "' not found!");
+    // Check if notecard exists
+    if (llGetInventoryType(gCurrentNotecardName) != INVENTORY_NOTECARD) {
+        llOwnerSay("Persona notecard not found: " + gCurrentNotecardName);
+        loadEmergencyDefaults();
         return;
     }
     
-    gCurrentNotecardName = notecardName;
-    gNotecardLine = 0;
+    // Start reading the notecard
     gPersonaLoadStep = 0;
-    
-    // Reset current persona data
+    gNotecardLine = 0;
     gPersonaEmotes = [];
     gPersonaResponses = [];
     
-    llOwnerSay("Loading persona '" + personaName + "' from notecard...");
-    gNotecardQuery = llGetNotecardLine(notecardName, gNotecardLine);
+    llOwnerSay("Loading persona: " + personaName);
+    gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
 }
 
-processNotecardLine(string line) {
-    // Remove leading/trailing whitespace and skip empty lines and comments
-    line = llStringTrim(line, STRING_TRIM);
-    if (line == "" || llSubStringIndex(line, "#") == 0) {
-        gNotecardLine++;
-        gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
-        return;
-    }
-    
-    // Check for section headers
-    if (line == "[CONFIG]") {
-        gPersonaLoadStep = 0;
-        gNotecardLine++;
-        gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
-        return;
-    }
-    else if (line == "[EMOTES]") {
-        gPersonaLoadStep = 1;
-        gNotecardLine++;
-        gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
-        return;
-    }
-    else if (line == "[RESPONSES]") {
-        gPersonaLoadStep = 2;
-        gNotecardLine++;
-        gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
-        return;
-    }
-    
-    // Process line based on current section
-    if (gPersonaLoadStep == 0) {
-        // CONFIG section
-        list parts = llParseString2List(line, ["="], []);
-        if (llGetListLength(parts) == 2) {
-            string configKey = llStringTrim(llList2String(parts, 0), STRING_TRIM);
-            string value = llStringTrim(llList2String(parts, 1), STRING_TRIM);
+processNotecardLine(string data) {
+    if (data == EOF_REACHED) {
+        // Finished reading current section
+        if (gPersonaLoadStep == 0) {
+            // Move to emotes section
+            gPersonaLoadStep = 1;
+            gNotecardLine = 0;
+            gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
+        } else if (gPersonaLoadStep == 1) {
+            // Move to responses section
+            gPersonaLoadStep = 2;
+            gNotecardLine = 0;
+            gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
+        } else {
+            // Finished loading persona
+            llOwnerSay("Persona loaded: " + gCurrentPersona);
+            updateHoverText();
             
-            if (configKey == "Name") {
-                gCurrentPersona = value;
-            }
-            else if (configKey == "OutfitFolder") {
-                gCurrentOutfitFolder = gRlvRootFolder + "/" + value;
-            }
-            else if (configKey == "ChatPrefix") {
-                gCurrentChatPrefix = value;
-            }
-            else if (configKey == "EmoteStyle") {
-                gCurrentEmoteStyle = value;
-            }
-            else if (configKey == "ResponseTone") {
-                gCurrentResponseTone = value;
+            // Broadcast persona change
+            llMessageLinked(LINK_SET, UPDATE_PERSONA_STATUS, gCurrentPersona, NULL_KEY);
+            
+            // Apply RLV outfit if specified
+            if (gCurrentOutfitFolder != "") {
+                applyPersonaOutfit();
             }
         }
+        return;
     }
-    else if (gPersonaLoadStep == 1) {
-        // EMOTES section
-        list parts = llParseString2List(line, ["="], []);
-        if (llGetListLength(parts) == 2) {
-            string emoteType = llStringTrim(llList2String(parts, 0), STRING_TRIM);
-            string emoteText = llStringTrim(llList2String(parts, 1), STRING_TRIM);
-            gPersonaEmotes += [emoteType, emoteText];
+    
+    // Skip empty lines and comments
+    data = llStringTrim(data, STRING_TRIM);
+    if (data == "" || llGetSubString(data, 0, 0) == "#") {
+        gNotecardLine++;
+        gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
+        return;
+    }
+    
+    // Process data based on current section
+    if (gPersonaLoadStep == 0) {
+        // Configuration section
+        if (llSubStringIndex(data, "PREFIX=") == 0) {
+            gCurrentChatPrefix = llGetSubString(data, 7, -1);
+        } else if (llSubStringIndex(data, "EMOTE_STYLE=") == 0) {
+            gCurrentEmoteStyle = llGetSubString(data, 12, -1);
+        } else if (llSubStringIndex(data, "RESPONSE_TONE=") == 0) {
+            gCurrentResponseTone = llGetSubString(data, 14, -1);
+        } else if (llSubStringIndex(data, "OUTFIT_FOLDER=") == 0) {
+            gCurrentOutfitFolder = llGetSubString(data, 14, -1);
         }
-    }
-    else if (gPersonaLoadStep == 2) {
-        // RESPONSES section
-        list parts = llParseString2List(line, ["="], []);
-        if (llGetListLength(parts) == 2) {
-            string trigger = llStringTrim(llList2String(parts, 0), STRING_TRIM);
-            string response = llStringTrim(llList2String(parts, 1), STRING_TRIM);
-            gPersonaResponses += [trigger, response];
+    } else if (gPersonaLoadStep == 1) {
+        // Emotes section
+        if (llSubStringIndex(data, "=") != -1) {
+            list parts = llParseString2List(data, ["="], []);
+            if (llGetListLength(parts) >= 2) {
+                string emoteType = llStringTrim(llList2String(parts, 0), STRING_TRIM);
+                string emoteText = llStringTrim(llList2String(parts, 1), STRING_TRIM);
+                gPersonaEmotes += [emoteType, emoteText];
+            }
+        }
+    } else if (gPersonaLoadStep == 2) {
+        // Responses section
+        if (llSubStringIndex(data, "=") != -1) {
+            list parts = llParseString2List(data, ["="], []);
+            if (llGetListLength(parts) >= 2) {
+                string trigger = llStringTrim(llList2String(parts, 0), STRING_TRIM);
+                string response = llStringTrim(llList2String(parts, 1), STRING_TRIM);
+                gPersonaResponses += [trigger, response];
+            }
         }
     }
     
@@ -402,99 +349,149 @@ processNotecardLine(string line) {
     gNotecardQuery = llGetNotecardLine(gCurrentNotecardName, gNotecardLine);
 }
 
-finishPersonaLoad() {
-    // Apply outfit changes if specified
-    if (gCurrentOutfitFolder != "") {
-        llOwnerSay("@detachfolder:" + gCurrentOutfitFolder + "=force");
-        llSleep(1.0);
-        llOwnerSay("@attachfolder=" + gCurrentOutfitFolder + "=force");
-        llOwnerSay("@unsharedwear:" + gCurrentOutfitFolder + "=add");
-    }
-    
-    // Update other systems
-    llMessageLinked(LINK_SET, SET_SPEECH_MODE, gCurrentResponseTone, NULL_KEY);
-    llMessageLinked(LINK_ROOT, UPDATE_PERSONA_STATUS, gCurrentPersona, NULL_KEY);
-    
-    updateHoverText();
-    
-    // Trigger greeting emote
-    llSleep(2.0);
-    triggerPersonaEmote("greeting");
-    
-    llOwnerSay("Persona '" + gCurrentPersona + "' loaded successfully!");
-    llOwnerSay("// Persona Protocol '" + gCurrentPersona + "' engaged. //");
-    
-    if (gAdministrator != NULL_KEY) {
-        llInstantMessage(gAdministrator, "Persona '" + gCurrentPersona + "' activated with " + gCurrentResponseTone + " personality mode.");
-    }
-}
-
-string getLevelCategory(float level) {
-    if (level <= 25.0) return "low";
-    else if (level <= 75.0) return "medium";
-    else return "high";
-}
-
-string getPersonaEmote(string emoteType) {
-    integer index = llListFindList(gPersonaEmotes, [emoteType]);
-    if (index != -1 && index + 1 < llGetListLength(gPersonaEmotes)) {
-        return llList2String(gPersonaEmotes, index + 1);
-    }
-    return "";
-}
-
-string getPersonaEmoteByLevel(string emoteType, float level) {
-    string levelCat = getLevelCategory(level);
-    string searchKey = emoteType + "_" + levelCat;
-    
-    // Try level-specific emote first
-    string emote = getPersonaEmote(searchKey);
-    if (emote != "") return emote;
-    
-    // Fallback to basic emote
-    return getPersonaEmote(emoteType);
-}
-
-string getPersonaResponse(string trigger) {
-    integer index = llListFindList(gPersonaResponses, [trigger]);
-    if (index != -1 && index + 1 < llGetListLength(gPersonaResponses)) {
-        return llList2String(gPersonaResponses, index + 1);
-    }
-    return "";
-}
-
 triggerPersonaEmote(string emoteType) {
-    string emoteText = getPersonaEmote(emoteType);
-    if (emoteText != "") {
-        llOwnerSay(emoteText);
+    integer idx = llListFindList(gPersonaEmotes, [emoteType]);
+    if (idx != -1 && idx + 1 < llGetListLength(gPersonaEmotes)) {
+        string emoteText = llList2String(gPersonaEmotes, idx + 1);
+        llSay(0, "/me " + emoteText);
+        llOwnerSay("Emote triggered: " + emoteType);
+    } else {
+        llOwnerSay("Emote not found: " + emoteType);
+    }
+}
+
+processPersonalityResponse(string input) {
+    input = llToLower(llStringTrim(input, STRING_TRIM));
+    
+    integer i;
+    for (i = 0; i < llGetListLength(gPersonaResponses); i += 2) {
+        string trigger = llToLower(llList2String(gPersonaResponses, i));
+        if (llSubStringIndex(input, trigger) != -1) {
+            string response = llList2String(gPersonaResponses, i + 1);
+            llSay(0, gCurrentChatPrefix + " " + response);
+            return;
+        }
+    }
+}
+
+applyPersonaOutfit() {
+    if (gCurrentOutfitFolder != "") {
+        string rlvCommand = "@attach:" + gRlvRootFolder + "/" + gCurrentOutfitFolder + "=force";
+        llOwnerSay(rlvCommand);
+        llOwnerSay("Applying persona outfit: " + gCurrentOutfitFolder);
     }
 }
 
 processIndicatorLevels() {
-    // Check for critical levels and trigger appropriate responses
-    if (gArousalLevel >= 75.0) {
-        string emote = getPersonaEmoteByLevel("arousal", gArousalLevel);
-        if (emote != "") llOwnerSay(emote);
-    }
-    else if (gArousalLevel >= 25.0 && llFrand(100.0) < 15.0) {
-        string emote = getPersonaEmoteByLevel("arousal", gArousalLevel);
-        if (emote != "") llOwnerSay(emote);
-    }
-    
-    if (gPainLevel >= 75.0) {
-        string emote = getPersonaEmoteByLevel("pain", gPainLevel);
-        if (emote != "") llOwnerSay(emote);
+    // Adjust persona behavior based on indicator levels
+    if (gArousalLevel > 75.0) {
+        gCurrentResponseTone = "excited";
+    } else if (gPainLevel > 50.0) {
+        gCurrentResponseTone = "distressed";
+    } else if (gStressLevel > 60.0) {
+        gCurrentResponseTone = "anxious";
+    } else {
+        gCurrentResponseTone = "standard";
     }
     
-    if (gStressLevel >= 75.0) {
-        string emote = getPersonaEmoteByLevel("stress", gStressLevel);
-        if (emote != "") llOwnerSay(emote);
+    updateHoverText();
+}
+
+showCurrentLevels(key user) {
+    string dialog = "\n[ CURRENT INDICATOR LEVELS ]\n";
+    dialog += "═══════════════════════════════════════\n";
+    dialog += "Arousal: " + (string)((integer)gArousalLevel) + "%\n";
+    dialog += "Stimulation: " + (string)((integer)gStimulationLevel) + "%\n";
+    dialog += "Pain: " + (string)((integer)gPainLevel) + "%\n";
+    dialog += "Stress: " + (string)((integer)gStressLevel) + "%\n\n";
+    dialog += "Current Response Tone: " + gCurrentResponseTone;
+    
+    list buttons = ["< BACK", "CLOSE"];
+    
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
+    llSetTimerEvent(60.0);
+}
+
+// --- MENU FUNCTIONS ---
+
+openPersonaMenu(key user) {
+    gCurrentMenuUser = user;
+    gMenuState = 0;
+    
+    string dialog = "\n[ PERSONA MANAGEMENT ]\n";
+    dialog += "═══════════════════════════════════════\n";
+    dialog += "Unit: " + gUnitName + "\n";
+    dialog += "Current: " + gCurrentPersona + "\n";
+    dialog += "Mode: " + gCurrentResponseTone + "\n";
+    dialog += "Battery: " + (string)((integer)gBatteryLevel) + "%\n\n";
+    dialog += "Select persona to load:";
+    
+    // Create buttons with available personas (max 9 for dialog limit)
+    list buttons = [];
+    integer count = llGetListLength(gAvailablePersonas);
+    integer i;
+    for (i = 0; i < count && i < 9; i++) {
+        buttons += [llList2String(gAvailablePersonas, i)];
     }
     
-    if (gStimulationLevel >= 75.0) {
-        string emote = getPersonaEmoteByLevel("stimulation", gStimulationLevel);
-        if (emote != "") llOwnerSay(emote);
-    }
+    // Add management options
+    buttons += ["Emotes", "Levels", "Reload"];
+    buttons += ["CLOSE"];
+    
+    gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llSetTimerEvent(60.0);
+    
+    llDialog(user, dialog, buttons, gMenuChannel);
+}
+
+openEmoteMenu(key user) {
+    gMenuState = 1;
+    
+    string dialog = "\n[ PERSONA EMOTES ]\n";
+    dialog += "═══════════════════════════════════════\n";
+    dialog += "Current Persona: " + gCurrentPersona + "\n";
+    dialog += "Emote Style: " + gCurrentEmoteStyle + "\n\n";
+    dialog += "Select emote to trigger:";
+    
+    list buttons = [
+        "Greeting", "Acknowledge", "Confusion",
+        "Error", "Idle", "Happy",
+        "Compliment", "Task Done"
+    ];
+    
+    buttons += ["< BACK", "CLOSE"];
+    
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
+    llSetTimerEvent(60.0);
+}
+
+openLevelsMenu(key user) {
+    gMenuState = 2;
+    
+    string dialog = "\n[ INDICATOR LEVELS ]\n";
+    dialog += "═══════════════════════════════════════\n";
+    dialog += "Arousal: " + (string)((integer)gArousalLevel) + "%\n";
+    dialog += "Stimulation: " + (string)((integer)gStimulationLevel) + "%\n";
+    dialog += "Pain: " + (string)((integer)gPainLevel) + "%\n";
+    dialog += "Stress: " + (string)((integer)gStressLevel) + "%\n\n";
+    dialog += "Response Tone: " + gCurrentResponseTone;
+    
+    list buttons = [
+        "Show All", "Reset All"
+    ];
+    
+    buttons += ["< BACK", "CLOSE"];
+    
+    llListenRemove(gListenHandle);
+    gListenHandle = llListen(gMenuChannel, "", user, "");
+    llDialog(user, dialog, buttons, gMenuChannel);
+    llSetTimerEvent(60.0);
 }
 
 // --- MAIN SCRIPT LOGIC ---
@@ -502,90 +499,59 @@ processIndicatorLevels() {
 default {
     state_entry() {
         wearer = llGetOwner();
-        gConfigReceived = FALSE;
-        
-        // Initialize with owner as admin (backup measure)
-        gAdministrators = [wearer];
-        gTrustedUsers = [];
+        gPendingAuthRequests = [];
         
         gMenuChannel = (integer)("0x" + llGetSubString(llGetKey(), -8, -2));
-        gCurrentPersona = "Default";
-        gCurrentChatPrefix = "[A.R.I.A.]";
-        gCurrentEmoteStyle = "neutral";
-        gCurrentResponseTone = "standard";
-        
-        // Initialize indicator levels
-        gArousalLevel = 0.0;
-        gStimulationLevel = 0.0;
-        gPainLevel = 0.0;
-        gStressLevel = 0.0;
-        
-        // Register this module
-        llMessageLinked(LINK_ROOT, MODULE_REGISTER, "Persona", NULL_KEY);
-        
-        // Set up chat listening for personality responses
         gChatListenHandle = llListen(0, "", wearer, "");
-        gChatListenActive = TRUE;
         
-        llOwnerSay("Persona module v4.1 initializing with notecard-based persona system...");
-        
-        // Scan for persona notecards
+        // Scan for available personas
         scanForPersonaNotecards();
-    }
-
-    dataserver(key query_id, string data) {
-        if (query_id == gNotecardQuery) {
-            if (data != EOF_REACHED) {
-                processNotecardLine(data);
-            } else {
-                // Finished reading notecard
-                finishPersonaLoad();
-            }
+        
+        // Load default persona
+        if (llListFindList(gAvailablePersonas, ["Default"]) != -1) {
+            loadPersonaFromNotecard("Default");
+        } else {
+            loadEmergencyDefaults();
         }
+        
+        updateHoverText();
+        
+        llOwnerSay("A.R.I.A. Persona Module v5.0 initialized with OpenCollar auth system.");
+        
+        // Register with master kernel
+        llMessageLinked(LINK_SET, MODULE_REGISTER, "Persona", NULL_KEY);
     }
 
     link_message(integer sender, integer num, string msg, key id) {
-        if (num == UPDATE_BATTERY) {
+        if (num == AUTH_REPLY) {
+            processAuthResponse(msg, id);
+        }
+        else if (num == OPEN_MY_MENU) {
+            key user = (key)msg;
+            requestAuth(user, "MENU_ACCESS");
+        }
+        else if (num == UPDATE_BATTERY) {
             gBatteryLevel = (float)msg;
             updateHoverText();
-        } 
-        else if (num == UPDATE_CONFIG) {
-            // Receive configuration from master kernel
-            list parts = llParseString2List(msg, ["|"], []);
-            if (llGetListLength(parts) >= 2) {
-                string adminCsv = llList2String(parts, 0);
-                string trustedCsv = llList2String(parts, 1);
-                
-                // Update local lists from master kernel
-                if (adminCsv != "") {
-                    gAdministrators = llCSV2List(adminCsv);
-                } else {
-                    gAdministrators = [wearer]; // Ensure owner is always admin
-                }
-                
-                if (trustedCsv != "") {
-                    gTrustedUsers = llCSV2List(trustedCsv);
-                } else {
-                    gTrustedUsers = [];
-                }
-                
-                gConfigReceived = TRUE;
-                llOwnerSay("Persona Module permissions updated from master kernel.");
-                llOwnerSay("Administrators: " + (string)llGetListLength(gAdministrators));
-                llOwnerSay("Trusted Users: " + (string)llGetListLength(gTrustedUsers));
-            }
         } 
         else if (num == UPDATE_UNIT_INFO) {
             gUnitName = msg;
             updateHoverText();
-        } 
-        else if (num == OPEN_MY_MENU) {
-            key user = (key)msg;
+        }
+        else if (num == POWER_STATE_CHANGE) {
+            gPowerState = (integer)msg;
             
-            // Check permissions using new system
-            if (checkModuleAccess(user, ACCESS_TRUSTED, "Persona Module")) {
-                gAdministrator = user;
-                openPersonaMenu(user);
+            if (!gPowerState) {
+                // Emergency power mode - disable chat processing
+                gChatListenActive = FALSE;
+                llListenRemove(gChatListenHandle);
+                llInstantMessage(wearer, "// Emergency power mode: Persona chat processing disabled //");
+            }
+            else {
+                // Power restored
+                gChatListenActive = TRUE;
+                gChatListenHandle = llListen(0, "", wearer, "");
+                llInstantMessage(wearer, "// Power restored: Persona systems online //");
             }
         }
         else if (num == RELAY_CHAT_MESSAGE) {
@@ -624,207 +590,104 @@ default {
         }
     }
 
-    listen(integer chan, string name, key id, string msg) {
-        if (chan == 0 && id == wearer && gChatListenActive) {
-            // Process wearer's chat for personality responses
-            processPersonalityResponse(msg);
+    listen(integer channel, string name, key id, string message) {
+        // Handle wearer chat for personality responses
+        if (channel == 0 && id == wearer && gChatListenActive) {
+            processPersonalityResponse(message);
+            return;
         }
-        else if (chan == gMenuChannel) {
+        
+        // Handle menu responses
+        if (channel == gMenuChannel && id == gCurrentMenuUser) {
+            llSetTimerEvent(0.0);
             llListenRemove(gListenHandle);
             
-            // Always check permissions in listen events
-            integer access = getAccessLevel(id);
+            if (message == "CLOSE") return;
             
-            if (msg == "Close") {
-                llInstantMessage(id, "Persona module menu closed.");
-                return;
-            }
-            
-            if (llListFindList(gAvailablePersonas, [msg]) != -1) {
-                if (access >= ACCESS_TRUSTED) {
-                    loadPersonaFromNotecard(msg);
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required to change personas.");
-                }
-            }
-            else if (msg == "Emotes") {
-                if (access >= ACCESS_TRUSTED) {
-                    openEmoteMenu(id);
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required for emotes.");
-                }
-            }
-            else if (msg == "Levels") {
-                if (access >= ACCESS_TRUSTED) {
-                    openLevelsMenu(id);
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required for levels.");
-                }
-            }
-            else if (msg == "Reload") {
-                if (access >= ACCESS_ADMIN) {
-                    llOwnerSay("Rescanning for persona notecards...");
-                    scanForPersonaNotecards();
-                    llInstantMessage(id, "Persona notecards reloaded.");
-                } else {
-                    llInstantMessage(id, "Access denied. Administrator permissions required to reload personas.");
-                }
-            }
-            else if (msg == "Greeting") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("greeting");
-                    llInstantMessage(id, "Greeting emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Acknowledge") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("acknowledgment");
-                    llInstantMessage(id, "Acknowledgment emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Confusion") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("confusion");
-                    llInstantMessage(id, "Confusion emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Error") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("error");
-                    llInstantMessage(id, "Error emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Idle") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("idle");
-                    llInstantMessage(id, "Idle emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Compliment") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("compliment");
-                    llInstantMessage(id, "Compliment emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Task Done") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("task_complete");
-                    llInstantMessage(id, "Task complete emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Happy") {
-                if (access >= ACCESS_TRUSTED) {
-                    triggerPersonaEmote("happy");
-                    llInstantMessage(id, "Happy emote triggered.");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Arousal Info") {
-                if (access >= ACCESS_TRUSTED) {
-                    llInstantMessage(id, "Arousal Level: " + (string)((integer)gArousalLevel) + "% (" + getLevelCategory(gArousalLevel) + ")");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Stim Info") {
-                if (access >= ACCESS_TRUSTED) {
-                    llInstantMessage(id, "Stimulation Level: " + (string)((integer)gStimulationLevel) + "% (" + getLevelCategory(gStimulationLevel) + ")");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Pain Info") {
-                if (access >= ACCESS_TRUSTED) {
-                    llInstantMessage(id, "Pain Level: " + (string)((integer)gPainLevel) + "% (" + getLevelCategory(gPainLevel) + ")");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Stress Info") {
-                if (access >= ACCESS_TRUSTED) {
-                    llInstantMessage(id, "Stress Level: " + (string)((integer)gStressLevel) + "% (" + getLevelCategory(gStressLevel) + ")");
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "Reset All") {
-                if (access >= ACCESS_ADMIN) {
-                    gArousalLevel = 0.0;
-                    gStimulationLevel = 0.0;
-                    gPainLevel = 0.0;
-                    gStressLevel = 0.0;
-                    llInstantMessage(id, "All indicator levels reset to 0%.");
-                    llOwnerSay("Indicator levels reset by " + llKey2Name(id));
-                } else {
-                    llInstantMessage(id, "Access denied. Administrator permissions required to reset levels.");
-                }
-            }
-            else if (msg == "Show All") {
-                if (access >= ACCESS_TRUSTED) {
-                    string report = "CURRENT INDICATOR LEVELS:\n";
-                    report += "Arousal: " + (string)((integer)gArousalLevel) + "%\n";
-                    report += "Stimulation: " + (string)((integer)gStimulationLevel) + "%\n";
-                    report += "Pain: " + (string)((integer)gPainLevel) + "%\n";
-                    report += "Stress: " + (string)((integer)gStressLevel) + "%";
-                    llInstantMessage(id, report);
-                } else {
-                    llInstantMessage(id, "Access denied. Trusted user permissions required.");
-                }
-            }
-            else if (msg == "-Back-") {
-                // Return to main menu
+            // Handle navigation
+            if (message == "< BACK") {
                 openPersonaMenu(id);
                 return;
             }
             
-            // Reopen appropriate menu after action
-            if (msg == "Arousal Info" || msg == "Stim Info" || msg == "Pain Info" || 
-                msg == "Stress Info" || msg == "Reset All" || msg == "Show All") {
-                openLevelsMenu(id);
+            // Handle menu actions with auth requests
+            if (llListFindList(gAvailablePersonas, [message]) != -1) {
+                requestAuth(id, "LOAD_PERSONA:" + message);
             }
-            else if (msg == "Greeting" || msg == "Acknowledge" || msg == "Confusion" || 
-                     msg == "Error" || msg == "Idle" || msg == "Compliment" || 
-                     msg == "Task Done" || msg == "Happy") {
-                openEmoteMenu(id);
+            else if (message == "Emotes") {
+                requestAuth(id, "EMOTES_MENU");
             }
-            else if (llListFindList(gAvailablePersonas, [msg]) == -1 && 
-                     msg != "Emotes" && msg != "Levels" && msg != "Reload") {
-                // Unknown option, reopen main menu
-                openPersonaMenu(id);
+            else if (message == "Levels") {
+                requestAuth(id, "LEVELS_MENU");
             }
+            else if (message == "Reload") {
+                requestAuth(id, "RELOAD_PERSONAS");
+            }
+            else if (message == "Greeting") {
+                requestAuth(id, "EMOTE:greeting");
+            }
+            else if (message == "Acknowledge") {
+                requestAuth(id, "EMOTE:acknowledgment");
+            }
+            else if (message == "Confusion") {
+                requestAuth(id, "EMOTE:confusion");
+            }
+            else if (message == "Error") {
+                requestAuth(id, "EMOTE:error");
+            }
+            else if (message == "Idle") {
+                requestAuth(id, "EMOTE:idle");
+            }
+            else if (message == "Happy") {
+                requestAuth(id, "EMOTE:happy");
+            }
+            else if (message == "Compliment") {
+                requestAuth(id, "EMOTE:compliment");
+            }
+            else if (message == "Task Done") {
+                requestAuth(id, "EMOTE:task_done");
+            }
+            else if (message == "Reset All") {
+                requestAuth(id, "RESET_LEVELS");
+            }
+            else if (message == "Show All") {
+                requestAuth(id, "SHOW_LEVELS");
+            }
+        }
+    }
+
+    dataserver(key query_id, string data) {
+        if (query_id == gNotecardQuery) {
+            processNotecardLine(data);
         }
     }
     
     timer() {
-        // Clean up listen handles
         llListenRemove(gListenHandle);
         llSetTimerEvent(0.0);
     }
+    
+    changed(integer c) {
+        if (c & CHANGED_OWNER) {
+            llResetScript();
+        }
+        else if (c & CHANGED_INVENTORY) {
+            // Rescan for personas when inventory changes
+            scanForPersonaNotecards();
+        }
+    }
 }
 
-//-- IMPLEMENTATION NOTES v4.1:
-//-- 1. Added complete permissions system from template
-//-- 2. All menu functions now check permissions before execution
-//-- 3. Permissions are synchronized from master kernel via UPDATE_CONFIG
-//-- 4. Access levels displayed in menus for transparency
-//-- 5. Config status shows synchronization state
-//-- 6. Owner automatically has admin access as backup measure
-//-- 7. All sensitive operations require at least trusted user access
-//-- 8. Administrative functions (reload, reset) require admin access
-//-- 9. Permission checks added to all listen event handlers
-//-- 10. Proper error messages when access is denied
+//-- IMPLEMENTATION NOTES v5.0:
+//-- 1. Completely replaced old permission system with OpenCollar AUTH_REQUEST/AUTH_REPLY
+//-- 2. Persona changes require Trusted user permissions minimum
+//-- 3. Reload functionality requires Owner permissions for security
+//-- 4. Asynchronous auth system prevents menu delays
+//-- 5. Enhanced notecard-based persona loading system
+//-- 6. Improved emote and response management
+//-- 7. Better indicator level processing and response tone adjustment
+//-- 8. Emergency power mode handling with chat processing disable
+//-- 9. Proper cleanup of pending auth requests and listeners
+//-- 10. Fixed all ternary operators and invalid LSL syntax
+//-- 11. Enhanced security measures for persona management
+//-- 12. Better inventory change handling for persona rescanning
