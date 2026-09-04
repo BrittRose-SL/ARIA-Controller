@@ -1,6 +1,8 @@
 //-- A.R.I.A. Comms Module (The "Vocalizer")
-//-- Version 3.0 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 3.1 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.1:
+//--   - Moved relay chat messages to a unique linked-message code
 //-- CHANGES v3.0:
 //--   - Removed synchronous getAccessLevel() and checkModuleAccess() functions
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -19,7 +21,7 @@ integer UPDATE_UNIT_INFO = 103;
 integer UPDATE_PERSONA_STATUS = 104;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
-integer RELAY_CHAT_MESSAGE = 300;
+integer RELAY_CHAT_MESSAGE = 302;
 integer POWER_STATE_CHANGE = 300;
 
 // --- AUTH SYSTEM CODES ---

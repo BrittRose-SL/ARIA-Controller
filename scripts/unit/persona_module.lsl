@@ -1,6 +1,12 @@
 //-- A.R.I.A. Persona Module (Add-on)
-//-- Version 5.1 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- Version 5.3 - OPENCOLLAR AUTH SYSTEM INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v5.3:
+//--   - Fixed persona key/value parsing so values may contain equals signs
+//--   - Aligned configuration keys with the persona data contract
+//-- CHANGES v5.2:
+//--   - Moved relay chat messages to a unique linked-message code
+//--   - Moved arousal updates to a unique linked-message code
 //-- CHANGES v5.1:
 //--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v5.0:
@@ -25,9 +31,9 @@ integer UPDATE_UNIT_INFO = 103;
 integer UPDATE_PERSONA_STATUS = 104;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
-integer RELAY_CHAT_MESSAGE = 300;
+integer RELAY_CHAT_MESSAGE = 302;
 integer PERSONA_EMOTE_TRIGGER = 301;
-integer UPDATE_AROUSAL = 400;
+integer UPDATE_AROUSAL = 404;
 integer UPDATE_STIMULATION = 401;
 integer UPDATE_PAIN = 402;
 integer UPDATE_STRESS = 403;
@@ -315,34 +321,30 @@ processNotecardLine(string data) {
     // Process data based on current section
     if (gPersonaLoadStep == 0) {
         // Configuration section
-        if (llSubStringIndex(data, "PREFIX=") == 0) {
-            gCurrentChatPrefix = llGetSubString(data, 7, -1);
+        if (llSubStringIndex(data, "ChatPrefix=") == 0) {
+            gCurrentChatPrefix = llGetSubString(data, 11, -1);
         } else if (llSubStringIndex(data, "EMOTE_STYLE=") == 0) {
             gCurrentEmoteStyle = llGetSubString(data, 12, -1);
         } else if (llSubStringIndex(data, "RESPONSE_TONE=") == 0) {
             gCurrentResponseTone = llGetSubString(data, 14, -1);
-        } else if (llSubStringIndex(data, "OUTFIT_FOLDER=") == 0) {
-            gCurrentOutfitFolder = llGetSubString(data, 14, -1);
+        } else if (llSubStringIndex(data, "OutfitFolder=") == 0) {
+            gCurrentOutfitFolder = llGetSubString(data, 13, -1);
         }
     } else if (gPersonaLoadStep == 1) {
         // Emotes section
-        if (llSubStringIndex(data, "=") != -1) {
-            list parts = llParseString2List(data, ["="], []);
-            if (llGetListLength(parts) >= 2) {
-                string emoteType = llStringTrim(llList2String(parts, 0), STRING_TRIM);
-                string emoteText = llStringTrim(llList2String(parts, 1), STRING_TRIM);
+        integer separator = llSubStringIndex(data, "=");
+        if (separator > 0) {
+                string emoteType = llStringTrim(llGetSubString(data, 0, separator - 1), STRING_TRIM);
+                string emoteText = llStringTrim(llGetSubString(data, separator + 1, -1), STRING_TRIM);
                 gPersonaEmotes += [emoteType, emoteText];
-            }
         }
     } else if (gPersonaLoadStep == 2) {
         // Responses section
-        if (llSubStringIndex(data, "=") != -1) {
-            list parts = llParseString2List(data, ["="], []);
-            if (llGetListLength(parts) >= 2) {
-                string trigger = llStringTrim(llList2String(parts, 0), STRING_TRIM);
-                string response = llStringTrim(llList2String(parts, 1), STRING_TRIM);
+        integer separator = llSubStringIndex(data, "=");
+        if (separator > 0) {
+                string trigger = llStringTrim(llGetSubString(data, 0, separator - 1), STRING_TRIM);
+                string response = llStringTrim(llGetSubString(data, separator + 1, -1), STRING_TRIM);
                 gPersonaResponses += [trigger, response];
-            }
         }
     }
     

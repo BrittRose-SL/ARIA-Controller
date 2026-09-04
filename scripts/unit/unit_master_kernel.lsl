@@ -1,8 +1,10 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 12.1 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 12.2 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
 //-- CHANGES v12.1:
 //--   - Corrected auth-level comparisons to match the OpenCollar ordering
+//-- CHANGES v12.2:
+//--   - Added the external API RLV command dispatch receiver
 //-- CHANGES v12.0: 
 //--   - Removed synchronous getAccessLevel() function
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -25,6 +27,7 @@ integer UPDATE_PERSONA_STATUS = 104;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
+integer RLV_COMMAND = 405;
 
 // --- NEW AUTH SYSTEM CODES ---
 integer AUTH_REQUEST = 600;
@@ -81,7 +84,6 @@ integer gMenuState = 0;
 
 // --- MENU PAGINATION ---
 integer gCurrentMenuPage = 0;
-key gCurrentMenuUser;
 list gCurrentMenuButtons;
 
 // --- HELPER FUNCTIONS ---
@@ -160,7 +162,6 @@ cleanupAuthRequests() {
 
 // Build paginated main menu (now called after auth check)
 buildMainMenu(key user, integer page) {
-    gCurrentMenuUser = user;
     gCurrentMenuPage = page;
     gMenuState = MENU_STATE_MAIN_MENU;
     
@@ -217,7 +218,6 @@ buildMainMenu(key user, integer page) {
 
 // Build modules menu (now called after auth check)
 buildModulesMenu(key user, integer page) {
-    gCurrentMenuUser = user;
     gCurrentMenuPage = page;
     gMenuState = MENU_STATE_MODULES_MENU;
     
@@ -476,6 +476,9 @@ default {
             if (gSyncedWearerHudKey != NULL_KEY) {
                 llRegionSayTo(gSyncedWearerHudKey, gWearerHudChannel, "BATTERY_UPDATE|" + (string)gBatteryLevel);
             }
+        }
+        else if (num == RLV_COMMAND) {
+            llOwnerSay(msg);
         }
     }
 

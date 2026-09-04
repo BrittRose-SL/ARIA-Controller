@@ -1,137 +1,155 @@
 # Review instructions
 
-This repo is a custom LSL plugin suite for Second Life (OpenCollar 8.3 base)
-plus a Cloudflare Worker backend. This file recalibrates severity for LSL's
-constraints, scopes review away from stock reference code, and adds
-repo-specific checks that a generic reviewer won't know to look for. It's
-injected as the highest-priority instruction for every `/code-review` run —
-see `CLAUDE.md` for the full standards and architecture reference this draws
-from.
+This repo is A.R.I.A. (Advanced Roleplay & Interaction Assistant), a modular
+RLV/RLVa Second Life controller framed as a sci-fi android/drone, made of
+three separate in-world objects (station, unit, wearer HUD). It is not an
+OpenCollar fork and contains no OpenCollar source. This file recalibrates
+severity for LSL's constraints and adds repo-specific checks grounded in the
+actual codebase. It's injected as the highest-priority instruction for every
+`/code-review` run — see `CLAUDE.md` for the full architecture reference.
+
+## Revision history
+
+- **2026-09-04 (this revision):** Full rewrite from the actual cloned repo.
+  Previous revisions assumed an OpenCollar-fork structure (`vendor/`,
+  `plugins/`) that does not exist in this project — void, replaced entirely.
+- 2026-09-03 and earlier: superseded.
 
 ## Scope
 
-- **`plugins/`** — primary review target. This is the actual custom code that
-  ships on the collar. Review every file here fully.
-- **`vendor/opencollar-8.3/`** — stock, unmodified reference only. Never
-  propose fixes here and never flag it as if it needs updating — it exists so
-  plugin changes can be checked for compatibility against core dispatch/auth/
-  settings behavior, not to be edited itself. If a plugin's behavior only
-  makes sense in light of something in `vendor/`, cross-reference it, don't
-  flag the vendor file.
-- **`templates/`** — check that placeholder/example content stays valid as a
-  starting point (e.g. correct message-map skeleton), not as if it were a
-  finished plugin. Don't flag "incomplete" logic that's an intentional
-  template gap.
-- **`worker/`** — JavaScript/Cloudflare Worker code, not LSL. Apply normal JS
-  and web-security review standards here (secrets handling, input validation,
-  KV access patterns), not the LSL-specific rules below.
-- **`notecards/*.example`** — documentation placeholders, skip entirely.
+- **`scripts/station/`, `scripts/unit/`, `scripts/wearer_hud/`** — the entire
+  project. Review every `.lsl` file fully. There is no vendor/reference tree
+  to compare against — everything here is original, review on LSL correctness
+  and internal consistency with the rest of this codebase.
+- **`scripts/unit/personas/*`** (no `.lsl` extension — plain text) — review as
+  content, not code. Check: valid `[CONFIG]`/`[EMOTES]`/`[RESPONSES]` section
+  headers, and that the same key set appears across personas that should be
+  interchangeable (compare against `Persona_Default` as the baseline — if a
+  new persona is missing a key `persona_module.lsl` expects, that's a real
+  runtime gap, not a style issue).
+- **`CHANGELOG.md`** — project-level SemVer releases. Distinct from each
+  script's own `Version X.Y` header (see `CLAUDE.md`). Don't conflate the two
+  when checking whether a change was "versioned."
+- **`.vscode/sl-vscode-plugin/`** — generated type-definition files for the
+  Second Life VS Code extension. Not hand-written, don't review for style.
+- **`.github/ISSUE_TEMPLATE/`** — skip, not code.
 
 ## What Important means here
 
-Reserve **Important** for findings that would break in-world behavior, cause
-scripts to silently fail for some auth level or RLV client, corrupt or
-truncate stored settings, or cause two scripts to conflict with each other
-(channel collision, constant collision, dispatch mismatch). These are things
+Findings that would break in-world behavior, cause a script to silently fail
+for some auth level, corrupt or truncate stored data, or cause two scripts to
+conflict (constant collision, channel collision, dispatch mismatch). Things
 that won't show up as a compile error but will fail quietly in Second Life.
 
 ## What Critical means here
 
-Reserve **Critical** for anything that plainly will not compile or run as
-LSL, or that has already caused the systemic bugs documented below and is
-recurring: ternary operators, `break` statements, non-explicit `if`/`else`,
-`osGetNotecard()` calls, `\u####` escape sequences, or a missing `CMD_ZERO`
-handler in a new app script.
+Anything that plainly will not compile or run as LSL: ternary operators,
+`break`/`continue` statements, non-explicit `if`/`else`, `osGetNotecard()`
+calls, `\u####` escape sequences, or a synchronous permission check that
+bypasses the existing `AUTH_REQUEST`/`AUTH_REPLY` async pattern.
 
 ## What Nit means here
 
-Style preferences that don't affect correctness: comment density, naming
-consistency, whether a helper function is split out — and only when they
-don't touch anything in the Critical/Important lists below.
+Style preferences that don't affect correctness — comment density, whether a
+helper function is split out, missing per-file license header (see
+`CLAUDE.md`) — and only when they don't touch anything in the
+Critical/Important lists below.
 
 ## Repo-specific checks — hard rules (Critical)
 
 - **No ternary operators.** Any `? :` usage — flag regardless of context.
-- **No `break` statements.** Restructure with explicit conditionals or state
-  flags instead — flag any `break` found inside a loop.
+- **No `break`/`continue`.** LSL loops have no such keyword — this will not
+  compile. Flag any use inside a loop.
 - **Explicit `if`/`else` only.** No shorthand or implicit fallthrough.
-- **No `osGetNotecard()`.** Not available in Second Life LSL — notecards must
-  be read via `llGetNotecardLine()` + a `dataserver` event handler. Flag any
-  synchronous notecard read attempt.
-- **No `\u####` Unicode escapes.** They render as literal text in LSL — flag
-  and require direct UTF-8 characters instead.
-- **Version header + changelog required.** Every functional change must bump
-  the in-file semantic version and add a changelog line. Flag a diff that
-  changes behavior but leaves the version header untouched.
+- **No `osGetNotecard()`.** Not available in Second Life LSL — flag any
+  synchronous notecard read; must go through `llGetNotecardLine()` +
+  `dataserver`.
+- **No `\u####` Unicode escapes.** Renders as literal text in LSL.
+- **No synchronous auth checks.** This codebase standardized on async
+  `AUTH_REQUEST`/`AUTH_REPLY` as of `unit_master_kernel.lsl` v12.0
+  specifically to remove a synchronous `getAccessLevel()`. Flag any new code
+  that blocks waiting for an auth result instead of using the request/reply
+  pattern.
+- **Version header + CHANGES bullet required.** Every functional change must
+  bump the file's `//-- Version X.Y` line and add a `//-- CHANGES vX.Y:`
+  bullet. Flag a diff that changes behavior but leaves the header untouched.
 
-## Repo-specific checks — known systemic bugs (Important)
+## Repo-specific checks — constant/channel collisions (Important)
 
-These have each caused real bugs across this suite before. Check for
-recurrence on every touched file, not just new code:
+There is no shared header across files in this codebase — every message code
+and channel number is copy-pasted into each file that needs it, so nothing is
+caught by the compiler. The two known message-code collisions have been
+resolved on the review branch:
 
-- **CMD_ZERO dispatch.** `oc_core` dispatches Apps submenu clicks with
-  `iNum = 0`, not an auth constant. Any app script handling menu button
-  clicks must explicitly handle `iNum == 0` and infer auth level from the
-  clicker's identity. Flag any new/changed dispatch handler that doesn't.
-- **Delimiter truncation.** `llParseString2List` with `=` or `_` as a
-  delimiter truncates values containing that character (webhook tokens,
-  settings values). Flag any use of `=`/`_` as a list-parse delimiter;
-  `llSubStringIndex`/`llGetSubString` should be used for key=value parsing
-  instead.
-- **`llLoopSound()` ordering.** Calling `llLoopSound()` before dispatching
-  `ANIM_START` can abort the event handler early. Flag any script where a
-  sound call precedes animation dispatch in the same handler.
-- **RLV restrictions are binary.** No price-awareness or conditional logic is
-  possible with restrictions like `@buy=n`. Flag any code that assumes
-  partial/conditional RLV restriction behavior.
-- **RLVa-only restrictions fail silently by design.** `@chatshout=n` and
-  similar RLVa-exclusive restrictions simply do nothing on base-RLV viewers —
-  this is expected. Do not flag the absence of error handling for unsupported
-  RLVa restrictions; do flag it if new code assumes such a restriction always
-  succeeds.
-- **Weld persistence.** Weld state must be written to both the settings store
-  and the prim description to remain durable. Flag any weld-related change
-  that only updates one of the two.
+- `POWER_STATE_CHANGE` remains `300`; `RELAY_CHAT_MESSAGE` is now `302`.
+- `UPDATE_AROUSAL` is now `404`; `RLV_COMMAND` is now `405`.
 
-## Cross-script consistency checks (Important)
+Future changes must preserve these unique assignments and propagate any
+renumbering to every sender and receiver.
+- **General rule for any new constant:** grep all of `scripts/` for the
+  literal integer before introducing it. This applies to the shared
+  100–602 message-code range and to the negative region-chat channels
+  (`-18795462` and neighbors) — it does not apply to small per-script local
+  menu-state enums (0–10ish), which are legitimately private to each script's
+  own dialog handling and fine to duplicate freely.
+- **Don't confuse the two numbering spaces.** `500`–`505` mean `CMD_*` auth
+  levels in `scripts/unit/` files and `STATION_*` message codes in
+  `scripts/station/` files — same integers, different meanings, safe today
+  only because unit and station never share a `link_message` space (they're
+  separate objects). Flag anything that would put a unit module and a station
+  module in the same linked object.
 
-Single-file review won't catch these — check across all of `plugins/`
-together, not just the file being changed:
+## Repo-specific checks — auth logic (Important)
 
-- **Settings key naming.** A key written by one script must match exactly
-  what any other script (or `oc_core`/`oc_settings` in `vendor/`) expects to
-  read. Flag mismatched or newly-introduced key names that don't match
-  existing conventions.
-- **`link_message` channel collisions.** Two plugins listening on or sending
-  to the same channel with overlapping message content can cross-talk. Flag
-  any new channel number that's already in use elsewhere in `plugins/` or
-  `vendor/`.
-- **`listen()` filter overlaps.** Same channel + overlapping name/id filters
-  across scripts can cause one script to consume a chat command meant for
-  another. Flag overlaps.
-- **`CMD_*` constant reuse.** Message-map constants (`CMD_OWNER`, `CMD_WEARER`,
-  etc., and any custom `CMD_*` added by a plugin) must not collide with
-  constants used elsewhere in the suite for a different purpose. Flag reused
-  integer values with different meanings.
+- **Auth-level comparison direction.** `CMD_OWNER = 500` is *most*
+  privileged, `CMD_NOACCESS = 599` is *least* — ascending value means
+  descending privilege. `permission_module.lsl`'s `CalcAuth()` and its callers
+  use `<=` to mean "at least this privileged" (e.g. `auth <= CMD_OWNER`).
+  Flag any new auth check that uses `>=` where `<=` was clearly intended, or
+  vice versa — this class of bug silently inverts access control rather than
+  failing loudly.
+- **Async only.** See Critical rules above — this is worth a second mention
+  here because it's an easy mistake to reintroduce piecemeal (e.g. a new
+  module polling for a cached auth value instead of listening for
+  `AUTH_REPLY`).
+
+## Repo-specific checks — persona data integrity (Important)
+
+- Compare any new or edited persona file's key set against `Persona_Default`.
+  A persona missing an `[EMOTES]` or `[RESPONSES]` key that `persona_module.lsl`
+  looks up will produce an empty or garbled in-world response, not a compile
+  error — flag missing keys explicitly, don't just note "looks incomplete."
+- `[CONFIG]` section fields (`Name`, `OutfitFolder`, `ChatPrefix`,
+  `EmoteStyle`, `ResponseTone`) should be present and non-empty in every
+  persona file.
 
 ## What NOT to flag
 
-Patterns that look like problems to a generic reviewer but are correct or
-intentional in this codebase:
-
-- Asynchronous notecard reads via a `dataserver` event chain — this is the
-  correct (only) LSL pattern, not a code smell.
-- Public local-chat announcements instead of private IMs for punishment/status
-  events — an intentional roleplay-visibility choice, not an oversight.
-- No automated test suite — LSL cannot be unit tested outside Second Life;
-  don't suggest adding one. Validation happens in-world.
-- RLVa-exclusive restrictions with no fallback behavior for base RLV viewers —
-  see above, this is by design.
+- **Sci-fi android/drone framing** in strings, persona content, and comments
+  — this is the intentional creative direction for the whole project, not an
+  inconsistency.
+- **Adult-content persona material** (e.g. `Persona_Sexbot`, the
+  arousal/stimulation emote categories) — intentional content for this
+  project, review it the same way as any other persona file (structural
+  completeness), not as something to question the presence of.
+- **The `500`–`505` numeric overlap** between unit `CMD_*` and station
+  `STATION_*` constants — safe as explained above; don't flag it as a
+  collision on its own. Only flag if a change would actually put both in the
+  same linked object.
+- **Missing per-file license headers** — Nit-level only (see `CLAUDE.md`);
+  the repo-level `LICENSE` (GPLv3) already covers this. Don't block a review
+  on it.
+- **No automated test suite** — LSL cannot be unit tested outside Second
+  Life; `docs/TESTING.md` is the manual checklist. Don't suggest adding
+  automated tests; validation happens in-world.
+- **A separate Cloudflare Worker / external backend** — `unit_api_integration.lsl`
+  is the in-world half of external/web integration, but whether a backend
+  repo actually exists is unconfirmed. Don't flag its absence from this repo
+  as a gap; it may live elsewhere or not exist yet.
 
 ## Style conventions (Nit-level only)
 
-- Prefer consolidating related functionality into one script over splitting
-  it across multiple app entries.
-- Keep menu hierarchies shallow — minimize click depth.
-- Comments should explain *why*, especially near anything on the systemic-bug
-  list above, not just restate what the line does.
+- Keep the existing `//-- Version X.Y - DESCRIPTION` / `//-- CHANGES vX.Y:`
+  header format consistent across files.
+- Comments should explain *why*, especially around the auth comparison
+  direction and the two known constant collisions, not just restate the line.

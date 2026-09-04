@@ -1,7 +1,12 @@
 //-- A.R.I.A. External API Module
-//-- Version 1.0 - GRID-WIDE & WEB INTEGRATION
+//-- Version 1.2 - GRID-WIDE & WEB INTEGRATION
 //-- Enables external control via HTTP API server for grid-wide functionality
 //-- Handles web interface commands, owner HUD remote control, and station management
+//-- CHANGES v1.2:
+//--   - Replaced the unsupported ternary operator with explicit LSL branching
+//--   - Fixed HTTP path and key=value parsing for API requests
+//-- CHANGES v1.1:
+//--   - Moved API RLV commands to a unique linked-message code
 
 // --- LINKED MESSAGE CODES ---
 integer MODULE_REGISTER = 200;
@@ -9,7 +14,7 @@ integer OPEN_MY_MENU = 201;
 integer UPDATE_BATTERY = 101;
 integer UPDATE_CONFIG = 102;
 integer POWER_STATE_CHANGE = 300;
-integer RLV_COMMAND = 400;
+integer RLV_COMMAND = 405;
 integer UPDATE_HOVER_DATA = 107;
 
 // --- API CONFIGURATION ---
@@ -137,10 +142,11 @@ string processAPICommand(string endpoint, string method, string body, key reques
     
     integer i;
     for (i = 0; i < llGetListLength(params); i++) {
-        list pair = llParseString2List(llList2String(params, i), ["="], []);
-        if (llGetListLength(pair) == 2) {
-            paramNames += [llUnescapeURL(llList2String(pair, 0))];
-            paramValues += [llUnescapeURL(llList2String(pair, 1))];
+        string pair = llList2String(params, i);
+        integer separator = llSubStringIndex(pair, "=");
+        if (separator > 0) {
+            paramNames += [llUnescapeURL(llGetSubString(pair, 0, separator - 1))];
+            paramValues += [llUnescapeURL(llGetSubString(pair, separator + 1, -1))];
         }
     }
     
@@ -442,8 +448,13 @@ default {
             string apiKey = "";
             // In a real implementation, you'd parse headers properly
             
-            // Parse URL path
-            string path = method; // Simplified - in reality you'd parse the URL
+            // The simulator provides the request path through x-path.
+            string path = llGetHTTPHeader(id, "x-path");
+            if (path == "") {
+                path = "/";
+            }
+
+            apiKey = llGetHTTPHeader(id, "x-api-key");
             
             // Validate request
             if (validateAPIRequest(body, apiKey, "")) {
@@ -530,7 +541,11 @@ default {
             string info = "\n=== API INFORMATION ===\n";
             info += "Unit ID: " + gUnitID + "\n";
             info += "API Key: " + llGetSubString(gAPIKey, 0, 8) + "...\n";
-            info += "Status: " + (gHTTPActive ? "ACTIVE" : "INACTIVE") + "\n";
+            string apiStatus = "INACTIVE";
+            if (gHTTPActive) {
+                apiStatus = "ACTIVE";
+            }
+            info += "Status: " + apiStatus + "\n";
             if (gHTTPActive) {
                 info += "URL: " + gHTTPURL + "\n";
             }

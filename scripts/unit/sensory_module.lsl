@@ -1,6 +1,8 @@
 //-- A.R.I.A. Sensory Module (Add-on)
-//-- Version 2.1 - OPENCOLLAR AUTH SYSTEM + ADULT DEVICE INTEGRATION
+//-- Version 2.2 - OPENCOLLAR AUTH SYSTEM + ADULT DEVICE INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v2.2:
+//--   - Moved arousal updates to a unique linked-message code
 //-- CHANGES v2.1:
 //--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v2.0:
@@ -25,7 +27,7 @@ integer UPDATE_BATTERY = 101;
 integer MODULE_REGISTER = 200;
 integer OPEN_MY_MENU = 201;
 integer POWER_STATE_CHANGE = 300;
-integer UPDATE_AROUSAL = 400;
+integer UPDATE_AROUSAL = 404;
 integer UPDATE_STIMULATION = 401;
 integer UPDATE_PAIN = 402;
 integer UPDATE_STRESS = 403;
