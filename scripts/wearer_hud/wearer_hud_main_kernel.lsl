@@ -1,12 +1,13 @@
-//-- A.R.I.A. Wearer HUD Main Controller v3.1.0
+//-- A.R.I.A. Wearer HUD Main Controller v3.1.1
 //-- Clean Rewrite - September 6, 2025
 //-- Controls visibility of all HUD components via hovertext interface
 //-- Attach to TOP CENTER HUD position
 //-- CHANGES v3.1.0:
 //--   - Aligned wearer HUD communication with the unit wearer-HUD channel
 //--   - Added real unit status synchronization and removed simulated status data
+//--   - Restored persona field alignment in the shared status payload
 
-string VERSION = "3.1.0";
+string VERSION = "3.1.1";
 string BUILD_DATE = "2025-09-06";
 
 // Communication channels
@@ -101,6 +102,7 @@ broadcastStatusUpdate() {
     string statusData = "STATUS_UPDATE|" + 
                        gConnectedUnit + "|" +
                        (string)gBattery + "|" +
+                       gPersona + "|" +
                        gAdminName + "|" +
                        (string)gSecured + "|" +
                        (string)gArousal + "|" +
@@ -304,7 +306,7 @@ connectToUnit(string unitName) {
             
             // Register this HUD with the unit and request initial status.
             llRegionSayTo(unitKey, (integer)unitChannel, "HUD_SYNC_REQUEST|" + (string)llGetKey());
-            llRegionSay((integer)unitChannel, "ARIA_STATUS_REQUEST|" + (string)gOwner);
+            llRegionSayTo(unitKey, (integer)unitChannel, "ARIA_STATUS_REQUEST|" + (string)gOwner);
             llSetTimerEvent(5.0);
             
             llOwnerSay("Connected to " + unitName);

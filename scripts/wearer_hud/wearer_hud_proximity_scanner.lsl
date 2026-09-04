@@ -1,7 +1,10 @@
-//-- A.R.I.A. Enhanced Proximity Scanner v5.0.0
+//-- A.R.I.A. Enhanced Proximity Scanner v5.0.1
 //-- Clean Build - September 8, 2025
 //-- Bottom center proximity scanner with attachment analysis
 //-- No ternary operators, clean LSL syntax
+//-- CHANGES v5.0.1:
+//--   - Removed the unused menu channel state
+//--   - Removed the dead conditional around stranger threat scoring
 
 string VERSION = "5.0.0";
 string BUILD_DATE = "2025-09-08";
@@ -27,7 +30,6 @@ string PROGRESS_PARTIAL_50 = "▌";
 string PROGRESS_PARTIAL_25 = "▎";
 
 // Dialog system
-integer gMenuChannel;
 integer gListenHandle;
 integer gMenuTimeOut = 30;
 
@@ -256,9 +258,7 @@ integer calculateThreat(key avatarKey, string gender, list attachmentAnalysis) {
         }
     }
     
-    if (gThreatFromStrangers) {
-        baseThreat += 5;
-    }
+    baseThreat += 5;
     
     if (gender == "Male") {
         baseThreat += 5;
@@ -510,8 +510,6 @@ initializeProximityScanner() {
     llOwnerSay("📊 Progress bar displays active");
     
     gOwner = llGetOwner();
-    gMenuChannel = -1000 - (integer)("0x" + llGetSubString((string)gOwner, -7, -1));
-    
     llSetAlpha(0.0, ALL_SIDES);
     updateScannerDisplay();
     
