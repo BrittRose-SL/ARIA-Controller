@@ -1,10 +1,12 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 12.2 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 12.3 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
 //-- CHANGES v12.1:
 //--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v12.2:
 //--   - Added the external API RLV command dispatch receiver
+//-- CHANGES v12.3:
+//--   - Added wearer HUD discovery, synchronization, and status responses
 //-- CHANGES v12.0: 
 //--   - Removed synchronous getAccessLevel() function
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -52,6 +54,7 @@ key gPendingSyncProgrammer;
 key gSyncedOwnerHudKey;
 key gSyncedWearerHudKey;
 string gCurrentPersona = "Default";
+string gUnitMode = "Standard";
 string gInstallDate = "";
 integer gInstallTimestamp = 0;
 
@@ -60,6 +63,20 @@ float gBatteryLevel = 100.0;
 float gBatteryDrainRate = 0.1;
 float gBatteryChargeRate = 1.0;
 integer gIsCharging = FALSE;
+
+// --- WEARER HUD COMMUNICATION ---
+string gUnitStatus = "Online";
+
+sendWearerHudStatus(key destination) {
+    string status = gUnitStatus;
+    if (!gPowerState) {
+        status = "Offline";
+    }
+
+    string response = "ARIA_STATUS|" + (string)llGetKey() + "|" + gUnitName + "|";
+    response += (string)gBatteryLevel + "|" + gCurrentPersona + "|" + gUnitMode + "|" + status;
+    llRegionSayTo(destination, gWearerHudChannel, response);
+}
 
 // --- MODULE MANAGEMENT ---
 list gRegisteredModules;
@@ -310,6 +327,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
     else if (action == "POWER_ON") {
         if (authLevel <= CMD_OWNER) {
             gPowerState = TRUE;
+            gUnitStatus = "Online";
             llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "ON", NULL_KEY);
             llSetTimerEvent(60.0);
             llInstantMessage(user, "A.R.I.A. systems online.");
@@ -326,6 +344,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
                 return;
             }
             gPowerState = FALSE;
+            gUnitStatus = "Offline";
             llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY);
             llSetTimerEvent(0.0);
             llInstantMessage(user, "A.R.I.A. systems shutting down.");
@@ -502,13 +521,32 @@ default {
             string command = llList2String(parts, 0);
             
             if (command == "HUD_SYNC_REQUEST") {
-                key hudKey = (key)llList2String(parts, 1);
                 if (chan == gOwnerHudChannel) {
-                    gSyncedOwnerHudKey = hudKey;
-                    llRegionSayTo(hudKey, chan, "HUD_SYNC_SUCCESS|" + gUnitName + "|" + (string)gBatteryLevel);
+                    if (llGetListLength(parts) >= 2) {
+                        key hudKey = (key)llList2String(parts, 1);
+                        if (hudKey == id) {
+                            gSyncedOwnerHudKey = hudKey;
+                            llRegionSayTo(hudKey, chan, "HUD_SYNC_SUCCESS|" + gUnitName + "|" + (string)gBatteryLevel);
+                        }
+                    }
                 } else {
-                    gSyncedWearerHudKey = hudKey;
-                    llRegionSayTo(hudKey, chan, "HUD_SYNC_SUCCESS|" + gUnitName + "|" + (string)gBatteryLevel);
+                    if (llGetListLength(parts) >= 2) {
+                        key hudKey = (key)llList2String(parts, 1);
+                        if (hudKey == id && llGetOwnerKey(id) == g_kWearer) {
+                            gSyncedWearerHudKey = hudKey;
+                            llRegionSayTo(hudKey, chan, "HUD_SYNC_SUCCESS|" + gUnitName + "|" + (string)gBatteryLevel);
+                        }
+                    }
+                }
+            }
+            else if (chan == gWearerHudChannel && command == "ARIA_SCAN") {
+                if (llGetListLength(parts) >= 2 && (key)llList2String(parts, 1) == g_kWearer && llGetOwnerKey(id) == g_kWearer) {
+                    llRegionSayTo(id, gWearerHudChannel, "ARIA_RESPONSE|" + (string)llGetKey() + "|" + gUnitName + "|" + (string)gWearerHudChannel);
+                }
+            }
+            else if (chan == gWearerHudChannel && command == "ARIA_STATUS_REQUEST") {
+                if (llGetListLength(parts) >= 2 && (key)llList2String(parts, 1) == g_kWearer && llGetOwnerKey(id) == g_kWearer) {
+                    sendWearerHudStatus(id);
                 }
             }
             return;

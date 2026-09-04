@@ -2,10 +2,11 @@
 //-- Visual Module & Restriction Status - September 8, 2025
 //-- Right-side app status display with checkmarks and X indicators
 //-- Attach to RIGHT SIDE HUD position
+//-- CHANGES v4.0.2: Fixed status and list synchronization with the main HUD controller
 //-- CHANGES v4.0.1: Fixed syntax error - removed unsupported 'static' keyword,
 //                   moved compactMode to global scope for proper state management
 
-string VERSION = "4.0.1";
+string VERSION = "4.0.2";
 string BUILD_DATE = "2025-09-08";
 
 // Status indicator characters
@@ -402,7 +403,11 @@ updateDisplayBasedOnMode() {
 
 // Process status updates from other scripts
 processStatusUpdate(string command, list parameters) {
-    if (command == "CONNECTION_UPDATE") {
+    if (command == "STATUS_UPDATE") {
+        gConnectedUnit = llList2String(parameters, 0);
+        updateDisplayBasedOnMode();
+    }
+    else if (command == "CONNECTION_UPDATE") {
         gConnectedUnit = llList2String(parameters, 0);
         updateDisplayBasedOnMode();
     }
@@ -446,7 +451,7 @@ processStatusUpdate(string command, list parameters) {
         // Full module list update
         gActiveModules = [];
         integer i;
-        for (i = 1; i < llGetListLength(parameters); i++) {
+        for (i = 0; i < llGetListLength(parameters); i++) {
             string module = llList2String(parameters, i);
             if (module != "") {
                 gActiveModules += [module];
@@ -459,7 +464,7 @@ processStatusUpdate(string command, list parameters) {
         // Full restriction list update
         gActiveRestrictions = [];
         integer i;
-        for (i = 1; i < llGetListLength(parameters); i++) {
+        for (i = 0; i < llGetListLength(parameters); i++) {
             string restriction = llList2String(parameters, i);
             if (restriction != "") {
                 gActiveRestrictions += [restriction];

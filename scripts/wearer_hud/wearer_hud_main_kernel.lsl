@@ -1,13 +1,16 @@
-//-- A.R.I.A. Wearer HUD Main Controller v3.0.1
+//-- A.R.I.A. Wearer HUD Main Controller v3.1.0
 //-- Clean Rewrite - September 6, 2025
 //-- Controls visibility of all HUD components via hovertext interface
 //-- Attach to TOP CENTER HUD position
+//-- CHANGES v3.1.0:
+//--   - Aligned wearer HUD communication with the unit wearer-HUD channel
+//--   - Added real unit status synchronization and removed simulated status data
 
-string VERSION = "3.0.1";
+string VERSION = "3.1.0";
 string BUILD_DATE = "2025-09-06";
 
 // Communication channels
-integer gCmdChannel = -18795462;
+integer gCmdChannel = -18795464;
 integer gMenuChannel;
 integer gListener;
 
@@ -15,6 +18,7 @@ integer gListener;
 key gOwner;
 integer gAttached = FALSE;
 string gConnectedUnit = "";
+key gConnectedUnitKey = NULL_KEY;
 list gUnits = [];
 integer gScanning = FALSE;
 integer gState = 0; // 0=disconnected, 1=scanning, 2=connected
@@ -97,7 +101,7 @@ broadcastStatusUpdate() {
     string statusData = "STATUS_UPDATE|" + 
                        gConnectedUnit + "|" +
                        (string)gBattery + "|" +
-                       gPersona + "|" +
+            llSetTimerEvent(5.0);
                        gAdminName + "|" +
                        (string)gSecured + "|" +
                        (string)gArousal + "|" +
@@ -120,10 +124,12 @@ broadcastStatusUpdate() {
 // Send visibility commands to components
 updateComponentVisibility() {
     // Send visibility states to components
+    llSetTimerEvent(5.0);
     llMessageLinked(UNIT_STATUS_LINK, 2000, "VISIBILITY|" + (string)gShowUnitStatus, "");
     llMessageLinked(APP_STATUS_LINK, 2000, "VISIBILITY|" + (string)gShowAppStatus, "");
     llMessageLinked(PROXIMITY_SCANNER_LINK, 2000, "VISIBILITY|" + (string)gShowProximityScanner, "");
 }
+    llSetTimerEvent(0.0);
 
 // Core initialization function
 initializeMainController() {
@@ -233,7 +239,7 @@ startUnitScan() {
     
     updateMainDisplay();
     
-    // Broadcast scan request
+    // Broadcast scan request on the dedicated wearer HUD channel.
     llRegionSay(gCmdChannel, "ARIA_SCAN|" + (string)gOwner);
     
     // Set scan timeout
@@ -289,6 +295,7 @@ connectToUnit(string unitName) {
             string unitChannel = llList2String(gUnits, i + 2);
             
             gConnectedUnit = unitName;
+            gConnectedUnitKey = unitKey;
             gState = 2;
             gAdminName = llGetDisplayName(gOwner);
             
@@ -298,8 +305,10 @@ connectToUnit(string unitName) {
             updateMainDisplay();
             broadcastStatusUpdate();
             
-            // Request initial status
+            // Register this HUD with the unit and request initial status.
+            llRegionSayTo(unitKey, (integer)unitChannel, "HUD_SYNC_REQUEST|" + (string)llGetKey());
             llRegionSay((integer)unitChannel, "ARIA_STATUS_REQUEST|" + (string)gOwner);
+            llSetTimerEvent(5.0);
             
             llOwnerSay("Connected to " + unitName);
             return;
@@ -318,6 +327,8 @@ disconnectFromUnit() {
     
     string oldUnit = gConnectedUnit;
     gConnectedUnit = "";
+    gConnectedUnitKey = NULL_KEY;
+    llSetTimerEvent(0.0);
     gState = 0;
     gActiveModules = ["Core System"];
     gActiveRestrictions = [];
@@ -428,21 +439,9 @@ processMenuResponse(string message) {
     }
 }
 
-// Simulate status changes for demo
-simulateStatusChanges() {
-    if (gState == 2) {
-        // Slowly change battery
-        gBattery -= 0.1;
-        if (gBattery < 0) gBattery = 100.0;
-        
-        // Randomly adjust other values
-        gArousal = 25.0 + llFrand(50.0);
-        gStimulation = 10.0 + llFrand(30.0);
-        gEnergy = 80.0 + llFrand(20.0);
-        gTreatLevel = (integer)llFrand(10);
-        
-        broadcastStatusUpdate();
-        updateMainDisplay();
+requestConnectedUnitStatus() {
+    if (gState == 2 && gConnectedUnitKey != NULL_KEY) {
+        llRegionSayTo(gConnectedUnitKey, gCmdChannel, "ARIA_STATUS_REQUEST|" + (string)gOwner);
     }
 }
 
@@ -486,15 +485,20 @@ default {
                 llOwnerSay("Found: " + unitName);
             }
             else if (command == "ARIA_STATUS" && gConnectedUnit != "") {
-                if (llGetListLength(parts) >= 5) {
-                    gBattery = (float)llList2String(parts, 2);
-                    gPersona = llList2String(parts, 3);
-                    gMode = llList2String(parts, 4);
-                    gStatus = llList2String(parts, 5);
+                if (llGetListLength(parts) >= 7 && (key)llList2String(parts, 1) == gConnectedUnitKey) {
+                    gBattery = (float)llList2String(parts, 3);
+                    gPersona = llList2String(parts, 4);
+                    gMode = llList2String(parts, 5);
+                    gStatus = llList2String(parts, 6);
                     
                     broadcastStatusUpdate();
                     updateMainDisplay();
                 }
+            }
+            else if (command == "BATTERY_UPDATE" && gConnectedUnit != "") {
+                gBattery = (float)llList2String(parts, 1);
+                broadcastStatusUpdate();
+                updateMainDisplay();
             }
         }
     }
@@ -503,8 +507,7 @@ default {
         if (gScanning) {
             stopUnitScan();
         } else {
-            // Periodic status simulation
-            simulateStatusChanges();
+            requestConnectedUnitStatus();
             llSetTimerEvent(5.0); // Update every 5 seconds
         }
     }
