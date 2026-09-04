@@ -1,6 +1,8 @@
 //-- A.R.I.A. Diagnostics RLV Module (Add-on)
-//-- Version 2.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- Version 2.1 - OPENCOLLAR AUTH SYSTEM INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v2.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v2.0:
 //--   - Replaced old permission system with OpenCollar auth
 //--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
@@ -89,14 +91,14 @@ processAuthResponse(string authReply, key originalUser) {
 // Execute action after authorization
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MENU_ACCESS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openControlMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for Diagnostics.");
         }
     }
     else if (action == "GET_VERSION") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             llOwnerSay("@version");
             llInstantMessage(user, "Version query sent. Response will be delivered via IM.");
             llInstantMessage(wearer, "// Diagnostics: Version query requested by " + llKey2Name(user) + " //");
@@ -106,7 +108,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "GET_ATTACHMENTS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             llOwnerSay("@getattachlist");
             llInstantMessage(user, "Attachment list query sent. Response will be delivered via IM.");
             llInstantMessage(wearer, "// Diagnostics: Attachment query requested by " + llKey2Name(user) + " //");
@@ -116,7 +118,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "GET_STATUS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             llOwnerSay("@getstatus");
             llInstantMessage(user, "Status query sent. Response will be delivered via IM.");
             llInstantMessage(wearer, "// Diagnostics: Status query requested by " + llKey2Name(user) + " //");
@@ -126,7 +128,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "GET_RESTRICTIONS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             llOwnerSay("@getrestrictions");
             llInstantMessage(user, "Restrictions query sent. Response will be delivered via IM.");
             llInstantMessage(wearer, "// Diagnostics: Restrictions query requested by " + llKey2Name(user) + " //");
@@ -136,7 +138,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RELAY_TOGGLE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gRelayMode = (gRelayMode + 1) % 4; // Cycle through the 4 modes
             string newStatus = llList2String(gRelayModes, gRelayMode);
             applyRelaySettings();
@@ -148,7 +150,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RELAY_OFF") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gRelayMode = 0;
             applyRelaySettings();
             llInstantMessage(user, "RLV Relay disabled.");
@@ -159,21 +161,21 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SYSTEM_INFO") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             showSystemInfo(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required.");
         }
     }
     else if (action == "RLV_TEST") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             performRLVTest(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required.");
         }
     }
     else if (action == "CLEAR_CACHE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             clearDiagnosticsCache(user);
         } else {
             llInstantMessage(user, "Access denied. Owner permissions required for cache clearing.");

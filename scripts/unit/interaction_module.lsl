@@ -1,6 +1,8 @@
 //-- A.R.I.A. Interaction RLV Module (Add-on)
-//-- Version 3.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- Version 3.1 - OPENCOLLAR AUTH SYSTEM INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v3.0:
 //--   - Replaced old permission system with OpenCollar auth
 //--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
@@ -95,14 +97,14 @@ processAuthResponse(string authReply, key originalUser) {
 // Execute action after authorization
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MENU_ACCESS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openControlMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for Interface controls.");
         }
     }
     else if (action == "INV_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gInvHidden = !gInvHidden;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -120,7 +122,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "MAP_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gMapHidden = !gMapHidden;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -138,7 +140,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "CAMERA_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gCameraLocked = !gCameraLocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -156,7 +158,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "IM_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIMHidden = !gIMHidden;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -174,7 +176,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "EDIT_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gEditHidden = !gEditHidden;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -192,7 +194,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "BUILD_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gBuildHidden = !gBuildHidden;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -210,7 +212,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "TP_TOGGLE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gTPBlocked = !gTPBlocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -228,7 +230,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SIT_TOGGLE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gSitBlocked = !gSitBlocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -246,7 +248,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RADAR_TOGGLE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gRadarHidden = !gRadarHidden;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -264,7 +266,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "MODE_STANDARD") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             setInterfaceMode("Standard", user);
             openControlMenu(user);
         } else {
@@ -272,7 +274,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "MODE_RESTRICTED") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             setInterfaceMode("Restricted", user);
             openControlMenu(user);
         } else {
@@ -280,7 +282,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "MODE_LOCKED") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             setInterfaceMode("Locked", user);
             openControlMenu(user);
         } else {
@@ -288,7 +290,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "MODE_BLACKOUT") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             setInterfaceMode("Blackout", user);
             openControlMenu(user);
         } else {
@@ -296,7 +298,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RESTORE_ALL") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             setInterfaceMode("Standard", user);
             openControlMenu(user);
         } else {

@@ -1,6 +1,8 @@
 //-- A.R.I.A. Mobility RLV Module (Add-on)
-//-- Version 3.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- Version 3.1 - OPENCOLLAR AUTH SYSTEM INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v3.0: 
 //--   - Replaced old permission system with OpenCollar auth
 //--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
@@ -94,14 +96,14 @@ processAuthResponse(string authReply, key originalUser) {
 // Execute action after authorization
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MENU_ACCESS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openControlMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for Mobility controls.");
         }
     }
     else if (action == "FREEZE_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsFrozen = !gIsFrozen;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -119,7 +121,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "GROUND_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsGrounded = !gIsGrounded;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -137,7 +139,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "TP_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsTPBlocked = !gIsTPBlocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -155,7 +157,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "JUMP_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsJumpBlocked = !gIsJumpBlocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -173,7 +175,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SIT_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsSitBlocked = !gIsSitBlocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -191,7 +193,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RUN_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsRunBlocked = !gIsRunBlocked;
             gLastActionBy = llKey2Name(user);
             applyRestrictions();
@@ -209,14 +211,14 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RELEASE_ALL") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             releaseAllRestrictions(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required.");
         }
     }
     else if (action == "LOCKDOWN") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             applyLockdown(user);
         } else {
             llInstantMessage(user, "Access denied. Owner permissions required for lockdown.");

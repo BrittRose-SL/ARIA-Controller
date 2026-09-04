@@ -1,6 +1,8 @@
 //-- A.R.I.A. Sensory Module (Add-on)
-//-- Version 2.0 - OPENCOLLAR AUTH SYSTEM + ADULT DEVICE INTEGRATION
+//-- Version 2.1 - OPENCOLLAR AUTH SYSTEM + ADULT DEVICE INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v2.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v2.0:
 //--   - Replaced old permission system with OpenCollar auth
 //--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
@@ -114,14 +116,14 @@ processAuthResponse(string authReply, key originalUser) {
 // Execute action after authorization
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MENU_ACCESS") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             openMainMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Owner permissions required for Sensory controls due to adult content.");
         }
     }
     else if (action == "TOGGLE_SYSTEM") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gSensoryActive = !gSensoryActive;
             string status;
             if (gSensoryActive) {
@@ -137,7 +139,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "EROTIC_MODE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gEroticMode = !gEroticMode;
             if (gEroticMode) {
                 llInstantMessage(user, "Erotic sensory mode activated.");
@@ -154,7 +156,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "PAIN_MODE") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gPainActive = !gPainActive;
             if (gPainActive) {
                 llInstantMessage(user, "Pain sensory mode activated.");
@@ -172,21 +174,21 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "STIMULATION") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             handleStimulationCommand(user);
         } else {
             llInstantMessage(user, "Access denied. Owner permissions required.");
         }
     }
     else if (action == "SHOCK") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             handleShockCommand(user);
         } else {
             llInstantMessage(user, "Access denied. Owner permissions required.");
         }
     }
     else if (action == "DEVICE_SCAN") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             scanForDevices(user);
         } else {
             llInstantMessage(user, "Access denied. Owner permissions required.");

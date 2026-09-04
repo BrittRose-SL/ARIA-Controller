@@ -1,6 +1,8 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 12.0 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 12.1 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v12.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v12.0: 
 //--   - Removed synchronous getAccessLevel() function
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -282,9 +284,9 @@ requestAuth(key user, string action) {
 // Execute action based on auth level
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MAIN_MENU") {
-        if (authLevel >= CMD_WEARER) {
+        if (authLevel <= CMD_WEARER) {
             // Check if unit is powered off first
-            if (!gPowerState && authLevel >= CMD_OWNER) {
+            if (!gPowerState && authLevel <= CMD_OWNER) {
                 open_menu(user, "\nUnit is OFFLINE.\nOnly Owners can power on the unit.", ["POWER ON"]);
                 return;
             } else if (!gPowerState) {
@@ -297,7 +299,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SYNC_CONFIRM") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             llRegionSay(gStationLinkChannel, "SYNC_SUCCESS|" + (string)llGetKey() + "|" + gUnitName);
             gPendingSyncProgrammer = NULL_KEY;
             llInstantMessage(user, "Sync with Programming Station successful.");
@@ -306,7 +308,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "POWER_ON") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             gPowerState = TRUE;
             llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "ON", NULL_KEY);
             llSetTimerEvent(60.0);
@@ -318,7 +320,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "POWER_OFF") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             if (gBatteryLevel < 5.0) {
                 llInstantMessage(user, "Cannot power off. Battery level is below 5%.");
                 return;
@@ -332,7 +334,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SECURE_UNIT") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsSecure = TRUE;
             if (gInstallTimestamp < 1) {
                 gInstallTimestamp = llGetUnixTime();
@@ -349,7 +351,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "UNLOCK_UNIT") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gIsSecure = FALSE;
             llOwnerSay("@detach=y");
             llInstantMessage(user, "Unit attachment lock: UNLOCKED.");
@@ -360,7 +362,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SOS") {
-        if (authLevel >= CMD_WEARER) {
+        if (authLevel <= CMD_WEARER) {
             // Find any owner to notify
             llOwnerSay("SOS signal activated by " + llKey2Name(user) + "!");
             llInstantMessage(user, "SOS signal sent.");
@@ -369,7 +371,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "HOME") {
-        if (authLevel >= CMD_WEARER) {
+        if (authLevel <= CMD_WEARER) {
             llOwnerSay("@tplm:" + gHomeLandmark + "=force");
             llInstantMessage(user, "Teleporting to home location...");
         } else {
@@ -377,7 +379,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SET_HOME") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gMenuState = MENU_STATE_SET_HOME;
             open_textbox(user, "\nEnter the new home SLURL:\n\nExample:\nhttp://maps.secondlife.com/secondlife/Region%20Name/128/128/22\n\nCurrent home:\n" + gHomeLandmark);
         } else {
@@ -385,7 +387,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "MODULES_MENU") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             buildModulesMenu(user, 0);
         } else {
             llInstantMessage(user, "Access denied. Trusted access required for modules.");

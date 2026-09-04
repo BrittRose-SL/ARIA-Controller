@@ -1,6 +1,8 @@
 //-- A.R.I.A. Vision RLV Module (Add-on)
-//-- Version 3.0 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 3.1 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v3.0:
 //--   - Removed synchronous getAccessLevel() and checkModuleAccess() functions
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -93,7 +95,7 @@ processVisionAuth(key user, integer authLevel, string action) {
     gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, idx - 1, idx + 2);
     
     // Vision operations require trusted access minimum
-    if (authLevel >= CMD_TRUSTED) {
+    if (authLevel <= CMD_TRUSTED) {
         executeVisionAction(user, action);
     } else {
         llInstantMessage(user, "Access denied. Trusted User permissions required for Vision RLV Module.");

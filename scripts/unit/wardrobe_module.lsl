@@ -1,6 +1,8 @@
 //-- A.R.I.A. Wardrobe RLV Module (Add-on)
-//-- Version 3.0 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 3.1 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v3.0:
 //--   - Removed synchronous getAccessLevel() and checkModuleAccess() functions
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -85,14 +87,14 @@ processWardrobeAuth(key user, integer authLevel, string action) {
     gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, idx - 1, idx + 2);
     
     // Basic wardrobe operations require trusted access, admin functions need higher
-    if (action == "WARDROBE_MENU" && authLevel >= CMD_TRUSTED) {
+    if (action == "WARDROBE_MENU" && authLevel <= CMD_TRUSTED) {
         executeWardrobeAction(user, action);
     }
-    else if ((action == "FOLDERS_MENU" || action == "UNEQUIP_ALL" || llSubStringIndex(action, "FOLDER:") == 0) && authLevel >= CMD_TRUSTED) {
+    else if ((action == "FOLDERS_MENU" || action == "UNEQUIP_ALL" || llSubStringIndex(action, "FOLDER:") == 0) && authLevel <= CMD_TRUSTED) {
         // Admin-level operations (folder management) - require trusted for A.R.I.A.
         executeWardrobeAction(user, action);
     }
-    else if (authLevel >= CMD_TRUSTED) {
+    else if (authLevel <= CMD_TRUSTED) {
         // Basic wardrobe operations for trusted users
         executeWardrobeAction(user, action);
     }

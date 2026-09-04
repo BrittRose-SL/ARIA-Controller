@@ -91,7 +91,7 @@ processCommsAuth(key user, integer authLevel, string action) {
     gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, idx - 1, idx + 2);
     
     // Most comms operations require wearer access minimum
-    if (authLevel >= CMD_WEARER) {
+    if (authLevel <= CMD_WEARER) {
         executeCommsAction(user, action);
     } else {
         llInstantMessage(user, "Access denied. Wearer permissions required for Communications Module.");

@@ -1,6 +1,8 @@
 //-- A.R.I.A. Persona Module (Add-on)
-//-- Version 5.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- Version 5.1 - OPENCOLLAR AUTH SYSTEM INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v5.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v5.0:
 //--   - Replaced old permission system with OpenCollar auth
 //--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
@@ -118,14 +120,14 @@ processAuthResponse(string authReply, key originalUser) {
 // Execute action after authorization
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MENU_ACCESS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openPersonaMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for Persona Module.");
         }
     }
     else if (llSubStringIndex(action, "LOAD_PERSONA:") == 0) {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             string personaName = llGetSubString(action, 13, -1); // Remove "LOAD_PERSONA:" prefix
             loadPersonaFromNotecard(personaName);
             llInstantMessage(user, "Loading persona: " + personaName);
@@ -136,21 +138,21 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "EMOTES_MENU") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openEmoteMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for emotes.");
         }
     }
     else if (action == "LEVELS_MENU") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openLevelsMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for levels.");
         }
     }
     else if (action == "RELOAD_PERSONAS") {
-        if (authLevel >= CMD_OWNER) {
+        if (authLevel <= CMD_OWNER) {
             llOwnerSay("Rescanning for persona notecards...");
             scanForPersonaNotecards();
             llInstantMessage(user, "Persona notecards reloaded.");
@@ -161,7 +163,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (llSubStringIndex(action, "EMOTE:") == 0) {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             string emoteType = llGetSubString(action, 6, -1); // Remove "EMOTE:" prefix
             triggerPersonaEmote(emoteType);
             llInstantMessage(user, llToUpper(emoteType) + " emote triggered.");
@@ -172,7 +174,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RESET_LEVELS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gArousalLevel = 0.0;
             gStimulationLevel = 0.0;
             gPainLevel = 0.0;
@@ -186,7 +188,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SHOW_LEVELS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             showCurrentLevels(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required.");

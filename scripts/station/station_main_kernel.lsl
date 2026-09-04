@@ -1,6 +1,8 @@
 //-- A.R.I.A. Programming Station Main Kernel
-//-- Version 1.0 - MODULAR STATION ARCHITECTURE
+//-- Version 1.1 - MODULAR STATION ARCHITECTURE
 //-- The main hub for all station modules, handles unit sync and core functionality
+//-- CHANGES v1.1:
+//--   - Added target unit keys to permission requests
 
 // --- COMMUNICATION CHANNELS ---
 integer gUnitLinkChannel = -18795462; // Communication with A.R.I.A. units
@@ -132,7 +134,7 @@ requestUnitData() {
     // Request comprehensive status from unit
     llRegionSay(gUnitLinkChannel, "REQUEST_FULL_STATUS|" + (string)gProgrammerKey);
     llRegionSay(gUnitLinkChannel, "REQUEST_MODULE_LIST|" + (string)gProgrammerKey);
-    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gProgrammerKey);
+    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)gProgrammerKey);
 }
 
 // --- MAIN SCRIPT LOGIC ---

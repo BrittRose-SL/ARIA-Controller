@@ -1,6 +1,8 @@
 //-- A.R.I.A. Tether RLV Module (Add-on)
-//-- Version 3.0 - OPENCOLLAR AUTH SYSTEM INTEGRATION
+//-- Version 3.1 - OPENCOLLAR AUTH SYSTEM INTEGRATION
 //-- September 12, 2025 - Updated to use AUTH_REQUEST/AUTH_REPLY system
+//-- CHANGES v3.1:
+//--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //-- CHANGES v3.0:
 //--   - Replaced old permission system with OpenCollar auth
 //--   - Implemented AUTH_REQUEST/AUTH_REPLY protocol
@@ -89,14 +91,14 @@ processAuthResponse(string authReply, key originalUser) {
 // Execute action after authorization
 executeAuthorizedAction(key user, integer authLevel, string action) {
     if (action == "MENU_ACCESS") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             openControlMenu(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required for Tether controls.");
         }
     }
     else if (action == "TETHER_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gTetherActive = !gTetherActive;
             if (gTetherActive) {
                 if (gFollowTarget != NULL_KEY) {
@@ -115,7 +117,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "LEASH_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gLeashVisible = !gLeashVisible;
             if (gLeashVisible) {
                 llInstantMessage(wearer, "// Leash effect enabled. //");
@@ -130,7 +132,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "AUTO_FOLLOW_TOGGLE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gAutoFollow = !gAutoFollow;
             if (gAutoFollow) {
                 llInstantMessage(wearer, "// Auto-follow mode enabled. //");
@@ -144,7 +146,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "FOLLOW_SELF") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gFollowTarget = user;
             llInstantMessage(wearer, "// Follow target set to: " + llKey2Name(user) + " //");
             updateFollow();
@@ -155,7 +157,7 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "RELEASE_ALL") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gTetherActive = FALSE;
             gFollowTarget = NULL_KEY;
             gLeashVisible = FALSE;
@@ -169,14 +171,14 @@ executeAuthorizedAction(key user, integer authLevel, string action) {
         }
     }
     else if (action == "SCAN_NEARBY") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             scanNearbyAvatars(user);
         } else {
             llInstantMessage(user, "Access denied. Trusted user permissions required.");
         }
     }
     else if (action == "SET_DISTANCE") {
-        if (authLevel >= CMD_TRUSTED) {
+        if (authLevel <= CMD_TRUSTED) {
             gMenuState = MENU_STATE_SET_DISTANCE;
             openDistanceInput(user);
         } else {

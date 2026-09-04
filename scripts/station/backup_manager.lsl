@@ -182,7 +182,7 @@ createBackup(string backupName, key user) {
     // Request all current data from unit
     llRegionSay(gUnitLinkChannel, "REQUEST_FULL_BACKUP_DATA|" + (string)user);
     llRegionSay(gUnitLinkChannel, "REQUEST_MODULE_LIST|" + (string)user);
-    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)user);
+    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)user);
     llRegionSay(gUnitLinkChannel, "REQUEST_PERSONA_LIST|" + (string)user);
     
     // Set timeout for backup completion

@@ -1,6 +1,8 @@
 //-- A.R.I.A. Station Permission Manager
-//-- Version 1.0 - USER PERMISSION MANAGEMENT
+//-- Version 1.1 - USER PERMISSION MANAGEMENT
 //-- Handles administrator and trusted user management for synced A.R.I.A. units
+//-- CHANGES v1.1:
+//--   - Added target unit keys to permission requests and updates
 
 // --- COMMUNICATION CHANNELS ---
 integer gUnitLinkChannel = -18795462; // Communication with A.R.I.A. units
@@ -126,7 +128,7 @@ addUser(string input, key requester, integer isAdmin) {
         userType = "ADMINISTRATOR";
     }
     
-    string command = "ADD_" + userType + "|" + (string)targetKey + "|" + (string)requester;
+    string command = "ADD_" + userType + "|" + (string)targetKey + "|" + (string)gSyncedUnitKey + "|" + (string)requester;
     llRegionSay(gUnitLinkChannel, command);
     
     string userName = llKey2Name(targetKey);
@@ -170,7 +172,7 @@ removeUser(string userName, key requester, integer isAdmin) {
     }
     
     // Send remove command to unit
-    string command = "REMOVE_" + userType + "|" + (string)targetKey + "|" + (string)requester;
+    string command = "REMOVE_" + userType + "|" + (string)targetKey + "|" + (string)gSyncedUnitKey + "|" + (string)requester;
     llRegionSay(gUnitLinkChannel, command);
     
     llInstantMessage(requester, "Removing " + userName + " from " + userType + " list...");
@@ -228,7 +230,7 @@ toggleWearerMode(key user) {
         return;
     }
     
-    string command = "TOGGLE_WEARER_MODE|" + (string)user;
+    string command = "TOGGLE_WEARER_MODE|" + (string)gSyncedUnitKey + "|" + (string)user;
     llRegionSay(gUnitLinkChannel, command);
     
     string newMode = "DISABLED";
@@ -247,7 +249,7 @@ syncPermissions(key user) {
     }
     
     llInstantMessage(user, "Syncing permission data from " + gSyncedUnitName + "...");
-    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)user);
+    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)user);
 }
 
 resetPermissions(key user) {
@@ -297,7 +299,7 @@ default {
                 llOwnerSay("Permission Manager synced with: " + gSyncedUnitName);
                 
                 // Request permission data
-                llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gCurrentUser);
+                llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)gCurrentUser);
             }
             else if (syncCommand == "DISCONNECT") {
                 gSyncedUnitKey = NULL_KEY;
@@ -381,7 +383,7 @@ default {
                     if (result == "SUCCESS") {
                         llInstantMessage(gCurrentUser, "Permission update successful: " + action + " " + userType);
                         // Request updated permission list
-                        llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gCurrentUser);
+                        llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)gCurrentUser);
                     } else {
                         llInstantMessage(gCurrentUser, "Permission update failed: " + result);
                     }

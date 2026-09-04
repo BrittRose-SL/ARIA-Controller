@@ -227,7 +227,7 @@ runSystemTest(key user) {
     // Test data requests
     llRegionSay(gUnitLinkChannel, "REQUEST_FULL_STATUS|" + (string)user);
     llRegionSay(gUnitLinkChannel, "REQUEST_MODULE_LIST|" + (string)user);
-    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)user);
+    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)user);
     
     llInstantMessage(user, "System test initiated. Results will be reported shortly.");
 }
@@ -258,7 +258,7 @@ refreshAllData(key user) {
     gDataRequests += 4;
     llRegionSay(gUnitLinkChannel, "REQUEST_FULL_STATUS|" + (string)user);
     llRegionSay(gUnitLinkChannel, "REQUEST_MODULE_LIST|" + (string)user);
-    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)user);
+    llRegionSay(gUnitLinkChannel, "REQUEST_PERMISSION_LIST|" + (string)gSyncedUnitKey + "|" + (string)user);
     llRegionSay(gUnitLinkChannel, "REQUEST_PERSONA_LIST|" + (string)user);
     
     llSay(0, "DATA REFRESH: Updating all cached information from " + gSyncedUnitName);
