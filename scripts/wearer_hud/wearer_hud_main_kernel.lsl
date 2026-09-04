@@ -101,7 +101,6 @@ broadcastStatusUpdate() {
     string statusData = "STATUS_UPDATE|" + 
                        gConnectedUnit + "|" +
                        (string)gBattery + "|" +
-            llSetTimerEvent(5.0);
                        gAdminName + "|" +
                        (string)gSecured + "|" +
                        (string)gArousal + "|" +
@@ -124,12 +123,10 @@ broadcastStatusUpdate() {
 // Send visibility commands to components
 updateComponentVisibility() {
     // Send visibility states to components
-    llSetTimerEvent(5.0);
     llMessageLinked(UNIT_STATUS_LINK, 2000, "VISIBILITY|" + (string)gShowUnitStatus, "");
     llMessageLinked(APP_STATUS_LINK, 2000, "VISIBILITY|" + (string)gShowAppStatus, "");
     llMessageLinked(PROXIMITY_SCANNER_LINK, 2000, "VISIBILITY|" + (string)gShowProximityScanner, "");
 }
-    llSetTimerEvent(0.0);
 
 // Core initialization function
 initializeMainController() {

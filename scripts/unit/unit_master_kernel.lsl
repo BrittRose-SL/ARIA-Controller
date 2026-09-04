@@ -1,5 +1,5 @@
 //-- A.R.I.A. Main Module (The "Operating System" Kernel)
-//-- Version 12.3 - OPENCOLLAR AUTH INTEGRATION
+//-- Version 12.4 - OPENCOLLAR AUTH INTEGRATION
 //-- September 12, 2025 - Refactored to use AUTH_REQUEST/AUTH_REPLY system
 //-- CHANGES v12.1:
 //--   - Corrected auth-level comparisons to match the OpenCollar ordering
@@ -7,6 +7,9 @@
 //--   - Added the external API RLV command dispatch receiver
 //-- CHANGES v12.3:
 //--   - Added wearer HUD discovery, synchronization, and status responses
+//-- CHANGES v12.4:
+//--   - Added authenticated owner HUD discovery, status, and command handling
+//--   - Added targeted and broadcast owner HUD command responses
 //-- CHANGES v12.0: 
 //--   - Removed synchronous getAccessLevel() function
 //--   - Implemented asynchronous AUTH_REQUEST/AUTH_REPLY protocol
@@ -86,6 +89,8 @@ list gActiveModules;
 list gPendingAuthRequests;  // Format: [requestId, userKey, action, timestamp, ...]
 integer gNextRequestId = 1;
 integer gAuthTimeoutSeconds = 30;
+list gPendingOwnerHudRequests; // Format: [requestId, userKey, action, source, timestamp, ...]
+integer gNextOwnerHudRequestId = 1;
 
 // --- MENU DIALOGS & VARIABLES ---
 string gMainMenuDialog;
@@ -173,6 +178,16 @@ cleanupAuthRequests() {
             gPendingAuthRequests = llDeleteSubList(gPendingAuthRequests, i, i + 3);
         } else {
             i += 4; // Move to next request
+        }
+    }
+
+    i = 0;
+    while (i < llGetListLength(gPendingOwnerHudRequests)) {
+        integer requestTime = llList2Integer(gPendingOwnerHudRequests, i + 4);
+        if (currentTime - requestTime > gAuthTimeoutSeconds) {
+            gPendingOwnerHudRequests = llDeleteSubList(gPendingOwnerHudRequests, i, i + 4);
+        } else {
+            i += 5;
         }
     }
 }
@@ -296,6 +311,105 @@ requestAuth(key user, string action) {
     
     // Start cleanup timer
     llSetTimerEvent(5.0);
+}
+
+requestOwnerHudAuth(key user, string action, key source) {
+    string requestId = (string)gNextOwnerHudRequestId;
+    gNextOwnerHudRequestId++;
+    integer timestamp = llGetUnixTime();
+    gPendingOwnerHudRequests += [requestId, user, action, source, timestamp];
+    llMessageLinked(LINK_SET, AUTH_REQUEST, action, user);
+    llSetTimerEvent(5.0);
+}
+
+integer findOwnerHudRequest(key user, string action) {
+    integer i = 0;
+    while (i < llGetListLength(gPendingOwnerHudRequests)) {
+        if (llList2Key(gPendingOwnerHudRequests, i + 1) == user && llList2String(gPendingOwnerHudRequests, i + 2) == action) {
+            return i;
+        }
+        i += 5;
+    }
+    return -1;
+}
+
+sendOwnerHudStatus(key destination) {
+    string status = gUnitStatus;
+    if (!gPowerState) {
+        status = "Offline";
+    }
+    string response = "ARIA_OWNER_STATUS|" + (string)llGetKey() + "|" + gUnitName + "|";
+    response += (string)gBatteryLevel + "|" + gCurrentPersona + "|" + gUnitMode + "|" + status;
+    llRegionSayTo(destination, gOwnerHudChannel, response);
+}
+
+sendOwnerHudCommandResponse(key destination, string command, string result) {
+    string response = "ARIA_OWNER_COMMAND_RESPONSE|" + (string)llGetKey() + "|" + command + "|" + result;
+    llRegionSayTo(destination, gOwnerHudChannel, response);
+}
+
+executeOwnerHudCommand(key user, integer authLevel, string action, key source) {
+    if (authLevel > CMD_OWNER || llGetOwnerKey(source) != user) {
+        sendOwnerHudCommandResponse(source, action, "DENIED");
+        return;
+    }
+
+    if (action == "POWER ON") {
+        gPowerState = TRUE;
+        gUnitStatus = "Online";
+        llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "ON", NULL_KEY);
+        sendOwnerHudCommandResponse(source, action, "SUCCESS");
+    }
+    else if (action == "POWER OFF") {
+        if (gBatteryLevel < 5.0) {
+            sendOwnerHudCommandResponse(source, action, "LOW_BATTERY");
+            return;
+        }
+        gPowerState = FALSE;
+        gUnitStatus = "Offline";
+        llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY);
+        sendOwnerHudCommandResponse(source, action, "SUCCESS");
+    }
+    else if (action == "EMERGENCY STOP") {
+        llOwnerSay("@clear");
+        gPowerState = FALSE;
+        gUnitStatus = "Offline";
+        llMessageLinked(LINK_SET, POWER_STATE_CHANGE, "OFF", NULL_KEY);
+        sendOwnerHudCommandResponse(source, action, "SUCCESS");
+    }
+    else if (action == "REFRESH") {
+        sendOwnerHudStatus(source);
+    }
+    else {
+        sendOwnerHudCommandResponse(source, action, "UNSUPPORTED");
+    }
+}
+
+processOwnerHudAuthResponse(key user, integer authLevel, string action) {
+    integer index = findOwnerHudRequest(user, action);
+    if (index == -1) return;
+
+    key source = llList2Key(gPendingOwnerHudRequests, index + 3);
+    gPendingOwnerHudRequests = llDeleteSubList(gPendingOwnerHudRequests, index, index + 4);
+
+    if (action == "OWNER_HUD_SCAN") {
+        if (authLevel <= CMD_OWNER && llGetOwnerKey(source) == user) {
+            llRegionSayTo(source, gOwnerHudChannel, "ARIA_OWNER_RESPONSE|" + (string)llGetKey() + "|" + gUnitName);
+        }
+    }
+    else if (action == "OWNER_HUD_STATUS") {
+        if (authLevel <= CMD_OWNER && llGetOwnerKey(source) == user) {
+            sendOwnerHudStatus(source);
+        }
+    }
+    else if (llSubStringIndex(action, "OWNER_HUD_COMMAND|") == 0) {
+        string command = llGetSubString(action, 18, -1);
+        executeOwnerHudCommand(user, authLevel, command, source);
+    }
+    else if (llSubStringIndex(action, "OWNER_HUD_BROADCAST|") == 0) {
+        string command = llGetSubString(action, 20, -1);
+        executeOwnerHudCommand(user, authLevel, command, source);
+    }
 }
 
 // Execute action based on auth level
@@ -436,6 +550,8 @@ default {
         gRegisteredModules = [];
         gActiveModules = [];
         gPendingAuthRequests = [];
+        gPendingOwnerHudRequests = [];
+        gNextOwnerHudRequestId = 1;
         
         llSetTimerEvent(60.0);
         llListen(gStationLinkChannel, "", NULL_KEY, "");
@@ -471,8 +587,12 @@ default {
                 key user = (key)llList2String(parts, 1);
                 integer authLevel = (integer)llList2String(parts, 2);
                 string originalAction = (string)id; // The action parameter from AUTH_REQUEST (passed as id parameter)
-                
-                processAuthResponse(user, authLevel, originalAction);
+
+                if (findOwnerHudRequest(user, originalAction) != -1) {
+                    processOwnerHudAuthResponse(user, authLevel, originalAction);
+                } else {
+                    processAuthResponse(user, authLevel, originalAction);
+                }
             }
         }
         else if (num == MODULE_REGISTER) {
@@ -519,6 +639,31 @@ default {
         if (chan == gOwnerHudChannel || chan == gWearerHudChannel) {
             list parts = llParseString2List(msg, ["|"], []);
             string command = llList2String(parts, 0);
+
+            if (chan == gOwnerHudChannel && command == "ARIA_OWNER_SCAN") {
+                if (llGetListLength(parts) >= 2) {
+                    requestOwnerHudAuth((key)llList2String(parts, 1), "OWNER_HUD_SCAN", id);
+                }
+                return;
+            }
+            else if (chan == gOwnerHudChannel && command == "ARIA_OWNER_STATUS_REQUEST") {
+                if (llGetListLength(parts) >= 2) {
+                    requestOwnerHudAuth((key)llList2String(parts, 1), "OWNER_HUD_STATUS", id);
+                }
+                return;
+            }
+            else if (chan == gOwnerHudChannel && command == "ARIA_OWNER_COMMAND") {
+                if (llGetListLength(parts) >= 4 && (key)llList2String(parts, 1) == llGetKey()) {
+                    requestOwnerHudAuth((key)llList2String(parts, 2), "OWNER_HUD_COMMAND|" + llList2String(parts, 3), id);
+                }
+                return;
+            }
+            else if (chan == gOwnerHudChannel && command == "ARIA_OWNER_BROADCAST") {
+                if (llGetListLength(parts) >= 3) {
+                    requestOwnerHudAuth((key)llList2String(parts, 1), "OWNER_HUD_BROADCAST|" + llList2String(parts, 2), id);
+                }
+                return;
+            }
             
             if (command == "HUD_SYNC_REQUEST") {
                 if (chan == gOwnerHudChannel) {

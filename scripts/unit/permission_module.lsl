@@ -1,8 +1,10 @@
 //-- A.R.I.A. Permissions Module (Add-on)
-//-- Version 3.3 - OPENCOLLAR STYLE AUTH SYSTEM
+//-- Version 3.4 - OPENCOLLAR STYLE AUTH SYSTEM
 //-- September 12, 2025 - Complete rewrite using OpenCollar auth architecture
 //-- CHANGES v3.3:
 //--   - Addressed station responses to the requesting station object
+//-- CHANGES v3.4:
+//--   - Restored persisted permission entries as key values for reliable auth
 //-- CHANGES v3.2:
 //--   - Corrected auth-level comparisons to match the OpenCollar ordering
 //--   - Normalized permission-list lookups to key values
@@ -151,6 +153,16 @@ savePermissionState() {
     llLinksetDataWrite(PERMISSION_WEARER_ADMIN_KEY, (string)g_iWearerAdminMode);
 }
 
+list csvToKeyList(string csvData) {
+    list values = llCSV2List(csvData);
+    list keyValues = [];
+    integer index;
+    for(index = 0; index < llGetListLength(values); index++) {
+        keyValues += [(key)llList2String(values, index)];
+    }
+    return keyValues;
+}
+
 loadPermissionState() {
     string owners = llLinksetDataRead(PERMISSION_OWNERS_KEY);
     string trusted = llLinksetDataRead(PERMISSION_TRUSTED_KEY);
@@ -160,9 +172,9 @@ loadPermissionState() {
     string rangeLimit = llLinksetDataRead(PERMISSION_RANGE_KEY);
     string wearerAdmin = llLinksetDataRead(PERMISSION_WEARER_ADMIN_KEY);
 
-    if(owners != "") g_lOwner = llCSV2List(owners);
-    if(trusted != "") g_lTrust = llCSV2List(trusted);
-    if(blocked != "") g_lBlock = llCSV2List(blocked);
+    if(owners != "") g_lOwner = csvToKeyList(owners);
+    if(trusted != "") g_lTrust = csvToKeyList(trusted);
+    if(blocked != "") g_lBlock = csvToKeyList(blocked);
     if(groupKey != "") g_kGroup = (key)groupKey;
     if(publicAccess != "") g_iPublic = (integer)publicAccess;
     if(rangeLimit != "") g_iLimitRange = (integer)rangeLimit;
